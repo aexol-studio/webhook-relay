@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use fs4::fs_std::FileExt;
 use oauth2::{
     basic::{
@@ -18,6 +19,19 @@ use oauth2::{
 use tokio::sync::oneshot;
 
 use crate::config::OAuthConfig;
+
+/// Trait for providing OAuth access tokens.
+/// 
+/// This abstracts the authentication mechanism, allowing different implementations
+/// for different use cases (browser-based OAuth, password grant for tests, etc.)
+#[async_trait]
+pub trait AuthProvider: Send + Sync {
+    /// Get an access token for authenticating with the relay server.
+    /// 
+    /// Implementations should handle token caching, refresh, and re-authentication
+    /// as needed.
+    async fn get_access_token(&self) -> Result<String>;
+}
 
 const DEFAULT_CALLBACK_PORT: u16 = 19284;
 const KEYRING_SERVICE: &str = "webhook-relay";
@@ -305,5 +319,12 @@ impl AuthManager {
         }
         
         Ok(AuthorizationCode::new(code))
+    }
+}
+
+#[async_trait]
+impl AuthProvider for AuthManager {
+    async fn get_access_token(&self) -> Result<String> {
+        self.get_access_token().await
     }
 }

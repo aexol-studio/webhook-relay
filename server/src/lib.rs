@@ -1,22 +1,22 @@
 pub mod auth;
-pub mod client_manager;
 pub mod config;
 pub mod grpc;
 pub mod http;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use api::relay_service_server::RelayServiceServer;
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server as TonicServer;
 
 use auth::{JwksCache, check_auth};
-use client_manager::ClientManager;
 use config::Config;
-use grpc::RelayServiceImpl;
+use grpc::{ClientConnections, RelayServiceImpl};
 use http::{HttpState, create_router};
 
 /// Server handle that can be used to control and stop the server
@@ -49,7 +49,7 @@ pub async fn run_server(config: Config) -> Result<(ServerHandle, ServerAddresses
 
     // Create shared state
     let jwks_cache = Arc::new(JwksCache::new(&config));
-    let client_manager = Arc::new(ClientManager::new(&config));
+    let connections: ClientConnections = Arc::new(RwLock::new(HashMap::new()));
 
     // Pre-fetch JWKS to fail fast if misconfigured
     tracing::info!("Fetching JWKS from IdP...");
@@ -60,7 +60,7 @@ pub async fn run_server(config: Config) -> Result<(ServerHandle, ServerAddresses
 
     // Start HTTP server
     let http_state = HttpState {
-        client_manager: client_manager.clone(),
+        connections: connections.clone(),
         webhook_timeout: Duration::from_secs(config.webhook_timeout_secs),
     };
 
@@ -84,7 +84,7 @@ pub async fn run_server(config: Config) -> Result<(ServerHandle, ServerAddresses
 
     // Start gRPC server
     let grpc_addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port).parse()?;
-    let relay_service = RelayServiceImpl::new(client_manager.clone(), jwks_cache.clone());
+    let relay_service = RelayServiceImpl::new(connections.clone(), jwks_cache.clone(), &config);
 
     // Bind to get the actual port
     let grpc_listener = tokio::net::TcpListener::bind(&grpc_addr).await?;

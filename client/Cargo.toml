@@ -17,6 +17,10 @@ tonic.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[lib]
+name = "client"
+path = "src/lib.rs"
+
 [package]
 name = "client"
 edition.workspace = true

@@ -1,6 +1,8 @@
 [dependencies]
+api = {path = "../api"}
 fs4 = "0.13"
 anyhow.workspace = true
+async-trait.workspace = true
 dirs.workspace = true
 keyring.workspace = true
 oauth2.workspace = true
@@ -8,7 +10,9 @@ open.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 toml.workspace = true
+tonic.workspace = true
 tracing.workspace = true
 
 [package]

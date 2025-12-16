@@ -28,7 +28,7 @@ checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
 name = "api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "prost",
  "tonic",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "api",
@@ -253,9 +253,11 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
+ "api",
+ "async-trait",
  "dirs",
  "fs4",
  "keyring",
@@ -264,7 +266,9 @@ dependencies = [
  "reqwest",
  "serde",
  "tokio",
+ "tokio-stream",
  "toml",
+ "tonic",
  "tracing",
 ]
 
@@ -1169,23 +1173,19 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcp-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "api",
- "base64",
+ "chrono",
  "common",
  "dirs",
- "fs4",
- "keyring",
- "open",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
  "toml",
- "tonic",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2122,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "api",
@@ -2134,6 +2134,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
@@ -2286,11 +2287,15 @@ dependencies = [
 
 [[package]]
 name = "tests"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "api",
+ "async-trait",
  "axum",
+ "chrono",
+ "client",
+ "common",
  "mcp-client",
  "reqwest",
  "serde",

@@ -10,6 +10,7 @@ const X_CLIENT_CERT_SUBJECT: &str = "x-client-cert-subject";
 const X_CLIENT_CERT_ISSUER: &str = "x-client-cert-issuer";
 const X_CLIENT_CERT_SERIAL: &str = "x-client-cert-serial";
 
+#[derive(Clone)]
 pub struct Proxy {
     client: reqwest::Client,
     local_endpoint: String,

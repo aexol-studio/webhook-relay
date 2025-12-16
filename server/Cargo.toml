@@ -6,6 +6,7 @@ path = "src/main.rs"
 api = {path = "../api"}
 tokio-util = {version = "0.7", features = ["rt"]}
 x509-parser = "0.17"
+sha2 = "0.10"
 anyhow.workspace = true
 axum.workspace = true
 hex.workspace = true

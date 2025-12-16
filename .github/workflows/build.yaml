@@ -62,10 +62,15 @@ jobs:
           cp result-binaries/bin/x86_64-pc-windows-gnu/client.exe release-artifacts/client-x86_64-windows.exe
           cp result-binaries/bin/x86_64-pc-windows-gnu/mcp-client.exe release-artifacts/mcp-client-x86_64-windows.exe
 
-          # macOS binaries
+          # macOS x86_64 binaries
           cp result-binaries/bin/x86_64-apple-darwin/server release-artifacts/server-x86_64-darwin
           cp result-binaries/bin/x86_64-apple-darwin/client release-artifacts/client-x86_64-darwin
           cp result-binaries/bin/x86_64-apple-darwin/mcp-client release-artifacts/mcp-client-x86_64-darwin
+
+          # macOS aarch64 binaries
+          cp result-binaries/bin/aarch64-apple-darwin/server release-artifacts/server-aarch64-darwin
+          cp result-binaries/bin/aarch64-apple-darwin/client release-artifacts/client-aarch64-darwin
+          cp result-binaries/bin/aarch64-apple-darwin/mcp-client release-artifacts/mcp-client-aarch64-darwin
       - name: Create GitHub Release
         if: inputs.create-release
         uses: softprops/action-gh-release@v2

@@ -1,15 +1,59 @@
 mod auth;
 mod config;
-mod grpc;
-mod proxy;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use auth::AuthManager;
 use config::Config;
-use grpc::GrpcClient;
-use proxy::Proxy;
+
+fn print_usage() {
+    eprintln!("Usage: client [OPTIONS]");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --init              Create default config file");
+    eprintln!("  --config <PATH>     Path to config file (default: ~/.config/webhook-relay/config.toml)");
+    eprintln!("  --help              Show this help message");
+}
+
+fn parse_args() -> Result<Option<PathBuf>> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut config_path: Option<PathBuf> = None;
+    let mut i = 1;
+    
+    while i < args.len() {
+        match args[i].as_str() {
+            "--help" | "-h" => {
+                print_usage();
+                std::process::exit(0);
+            }
+            "--init" => {
+                Config::create_default()?;
+                println!("Created default config at {}", Config::config_path()?.display());
+                println!("Please edit the config file and run again.");
+                std::process::exit(0);
+            }
+            "--config" | "-c" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--config requires a path argument");
+                }
+                config_path = Some(PathBuf::from(&args[i]));
+            }
+            arg if arg.starts_with('-') => {
+                anyhow::bail!("Unknown option: {}", arg);
+            }
+            _ => {
+                anyhow::bail!("Unexpected argument: {}", args[i]);
+            }
+        }
+        i += 1;
+    }
+    
+    Ok(config_path)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -23,17 +67,16 @@ async fn main() -> Result<()> {
         .init();
     
     // Parse arguments
-    let args: Vec<String> = std::env::args().collect();
-    
-    if args.iter().any(|a| a == "--init") {
-        Config::create_default()?;
-        println!("Created default config at {}", Config::config_path()?.display());
-        println!("Please edit the config file and run again.");
-        return Ok(());
-    }
+    let config_path = parse_args()?;
     
     // Load configuration
-    let mut config = Config::load()?;
+    let mut config = match config_path {
+        Some(path) => {
+            tracing::info!(path = %path.display(), "Loading config from custom path");
+            Config::load_from(&path)?
+        }
+        None => Config::load()?,
+    };
     
     tracing::info!(
         server_address = %config.server_address,
@@ -44,27 +87,25 @@ async fn main() -> Result<()> {
     // Discover OAuth endpoints
     config.discover_oauth_endpoints().await?;
     
-    // Authenticate
+    // Create auth manager
     let auth_manager = AuthManager::new(&config.oauth)?;
-    let access_token = auth_manager.get_access_token().await?;
     
-    // Connect to server
-    tracing::info!("Connecting to server at {}", config.server_address);
-    let grpc_client = GrpcClient::connect(&config.server_address, access_token).await?;
-    
-    // Get config (which registers us and returns our endpoint)
-    let client_config = grpc_client.get_config().await?;
+    // Run client with auth provider
+    let client_handle = client::run_client(client::ClientConfig {
+        server_address: config.server_address,
+        auth_provider: auth_manager,
+        local_endpoint: config.local_endpoint,
+    }).await?;
     
     println!("Connected to server.");
-    println!("Your webhook endpoint: {}", client_config.endpoint);
+    println!("Your webhook endpoint: {}", client_handle.endpoint);
     println!();
     println!("Listening for webhooks... (Ctrl+C to exit)");
     
-    // Create proxy
-    let proxy = Proxy::new(config.local_endpoint);
+    // Wait for Ctrl+C
+    tokio::signal::ctrl_c().await?;
     
-    // Run webhook stream
-    grpc_client.run_webhook_stream(proxy).await?;
+    client_handle.stop();
     
     Ok(())
 }

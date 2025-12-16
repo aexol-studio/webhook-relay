@@ -1,9 +1,13 @@
 [dependencies]
 api = {path = "../api"}
+client = {path = "../client"}
+common = {path = "../common"}
 server = {path = "../server"}
 mcp-client = {path = "../mcp-client"}
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
+chrono.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

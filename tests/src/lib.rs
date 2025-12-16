@@ -4,9 +4,73 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use axum::{Router, extract::State, routing::post};
+use common::AuthProvider;
 use serde::Deserialize;
 use tokio::sync::Mutex;
+
+/// Authentication provider for tests using OAuth password grant.
+/// 
+/// This allows tests to authenticate without browser interaction.
+pub struct TestAuthProvider {
+    issuer: String,
+    client_id: String,
+    username: String,
+    password: String,
+}
+
+impl TestAuthProvider {
+    /// Create a new test auth provider
+    pub fn new(issuer: &str, client_id: &str, username: &str, password: &str) -> Self {
+        Self {
+            issuer: issuer.to_string(),
+            client_id: client_id.to_string(),
+            username: username.to_string(),
+            password: password.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl AuthProvider for TestAuthProvider {
+    async fn get_access_token(&self) -> Result<String> {
+        get_test_token(&self.issuer, &self.client_id, &self.username, &self.password).await
+    }
+}
+
+/// Authentication provider that returns a static/fixed token.
+/// 
+/// Useful for testing invalid token scenarios.
+pub struct StaticTokenAuthProvider {
+    token: String,
+}
+
+impl StaticTokenAuthProvider {
+    /// Create a new static token auth provider
+    pub fn new(token: impl Into<String>) -> Self {
+        Self {
+            token: token.into(),
+        }
+    }
+    
+    /// Create an auth provider that returns an empty token
+    pub fn empty() -> Self {
+        Self::new("")
+    }
+    
+    /// Create an auth provider that returns an invalid token
+    pub fn invalid() -> Self {
+        Self::new("invalid.token.here")
+    }
+}
+
+#[async_trait]
+impl AuthProvider for StaticTokenAuthProvider {
+    async fn get_access_token(&self) -> Result<String> {
+        Ok(self.token.clone())
+    }
+}
 
 /// Get an OAuth access token from Keycloak using password grant
 pub async fn get_test_token(

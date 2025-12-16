@@ -5,79 +5,216 @@
 
 mod mcp;
 
-use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use api::{relay_service_client::RelayServiceClient, GetConfigRequest, HttpResponse};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio_stream::StreamExt;
-use tonic::{metadata::MetadataValue, transport::Channel, Request};
+use tokio::sync::{Mutex, RwLock};
 
 pub use mcp::*;
 
+pub mod auth {
+    pub use common::auth::AuthManager;
+}
+
+pub mod config {
+    use std::path::{Path, PathBuf};
+
+    use anyhow::{bail, Context, Result};
+    use serde::{Deserialize, Serialize};
+
+    pub use common::config::{config_dir, config_path, discover_oauth_endpoints, OAuthConfig};
+
+    /// Full client configuration
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Config {
+        pub server_address: String,
+        pub local_endpoint: String,
+
+        #[serde(default)]
+        pub oauth: OAuthConfig,
+    }
+
+    impl Config {
+        /// Get config directory (wrapper for common::config::config_dir)
+        pub fn config_dir() -> Result<PathBuf> {
+            config_dir()
+        }
+
+        /// Get config path (wrapper for common::config::config_path)
+        pub fn config_path() -> Result<PathBuf> {
+            config_path()
+        }
+
+        /// Load configuration from the default path
+        pub fn load() -> Result<Self> {
+            Self::load_from(Self::config_path()?)
+        }
+
+        /// Load configuration from a specific path
+        pub fn load_from<P: AsRef<Path>>(path: P) -> Result<Self> {
+            let path = path.as_ref();
+
+            if !path.exists() {
+                bail!(
+                    "Config file not found at {}. Run with --init to create a default config.",
+                    path.display()
+                );
+            }
+
+            let contents =
+                std::fs::read_to_string(path).context("Failed to read config file")?;
+
+            toml::from_str(&contents).context("Failed to parse config file")
+        }
+
+        /// Create default configuration file
+        pub fn create_default() -> Result<Self> {
+            let config_dir = Self::config_dir()?;
+            std::fs::create_dir_all(&config_dir).context("Failed to create config directory")?;
+
+            let config = Config {
+                server_address: "http://localhost:50051".to_string(),
+                local_endpoint: "http://localhost:3000".to_string(),
+                oauth: OAuthConfig {
+                    client_id: "webhook-relay-cli".to_string(),
+                    issuer: "http://localhost:8180/realms/relay".to_string(),
+                    auth_url: None,
+                    token_url: None,
+                    callback_port: None,
+                },
+            };
+
+            let path = Self::config_path()?;
+            let contents =
+                toml::to_string_pretty(&config).context("Failed to serialize config")?;
+
+            std::fs::write(&path, contents).context("Failed to write config file")?;
+
+            tracing::info!(path = %path.display(), "Created default config file");
+
+            Ok(config)
+        }
+
+        /// Discover OAuth endpoints from OIDC well-known configuration
+        pub async fn discover_oauth_endpoints(&mut self) -> Result<()> {
+            discover_oauth_endpoints(&mut self.oauth).await
+        }
+    }
+}
+
+/// A log entry recording a webhook request and its response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestLogEntry {
+    /// Unique request ID
+    pub request_id: String,
+    /// Timestamp when the request was received
+    pub timestamp: DateTime<Utc>,
+    /// HTTP method
+    pub method: String,
+    /// Request path
+    pub path: String,
+    /// Query string
+    pub query: String,
+    /// Request headers
+    pub request_headers: std::collections::HashMap<String, String>,
+    /// Request body (as string, lossy conversion)
+    pub request_body: String,
+    /// Response status code
+    pub response_status: u32,
+    /// Response headers
+    pub response_headers: std::collections::HashMap<String, String>,
+    /// Response body (as string, lossy conversion)
+    pub response_body: String,
+}
+
 /// Shared state for the MCP server
 pub struct McpState {
-    /// gRPC channel to the relay server
-    channel: Option<Channel>,
-    /// Access token for authentication
-    access_token: Option<String>,
-    /// Server address
-    server_address: String,
+    /// The loaded configuration
+    config: config::Config,
     /// Client endpoint (assigned by server)
     endpoint: Option<String>,
-    /// Pending webhook requests waiting for responses
-    pending_requests: HashMap<String, api::HttpRequest>,
-    /// Channel to send responses back to the gRPC stream
-    response_tx: Option<mpsc::Sender<HttpResponse>>,
     /// Whether we're connected to the relay server
     connected: bool,
+    /// Request log (newest entries at the end)
+    request_log: Vec<RequestLogEntry>,
 }
 
 impl McpState {
-    /// Create a new MCP state
-    pub fn new() -> Self {
+    /// Create a new MCP state with the given config
+    pub fn new(config: config::Config) -> Self {
         Self {
-            channel: None,
-            access_token: None,
-            server_address: String::new(),
+            config,
             endpoint: None,
-            pending_requests: HashMap::new(),
-            response_tx: None,
             connected: false,
+            request_log: Vec::new(),
         }
     }
-    
+
     /// Check if connected to the relay server
     pub fn is_connected(&self) -> bool {
         self.connected
     }
-    
+
     /// Get the webhook endpoint URL
     pub fn get_endpoint(&self) -> Option<&str> {
         self.endpoint.as_deref()
     }
-    
-    /// Get pending requests count
-    pub fn pending_count(&self) -> usize {
-        self.pending_requests.len()
-    }
-}
 
-impl Default for McpState {
-    fn default() -> Self {
-        Self::new()
+    /// Get the config
+    pub fn get_config(&self) -> &config::Config {
+        &self.config
+    }
+
+    /// Add an entry to the request log
+    pub fn add_log_entry(&mut self, entry: RequestLogEntry) {
+        self.request_log.push(entry);
+    }
+
+    /// Get request log entries, paginated, sorted from newest to oldest
+    /// 
+    /// Returns (entries, total_count)
+    pub fn get_request_log(&self, page: usize, page_size: usize) -> (Vec<&RequestLogEntry>, usize) {
+        let total = self.request_log.len();
+        let start = page * page_size;
+        
+        if start >= total {
+            return (Vec::new(), total);
+        }
+        
+        // Reverse iteration for newest first
+        let entries: Vec<_> = self.request_log
+            .iter()
+            .rev()
+            .skip(start)
+            .take(page_size)
+            .collect();
+        
+        (entries, total)
+    }
+
+    /// Set connected status and endpoint
+    pub fn set_connected(&mut self, endpoint: String) {
+        self.connected = true;
+        self.endpoint = Some(endpoint);
+    }
+
+    /// Set disconnected status
+    pub fn set_disconnected(&mut self) {
+        self.connected = false;
+        self.endpoint = None;
     }
 }
 
 /// Shared state type alias
 pub type SharedState = Arc<RwLock<McpState>>;
 
-/// Create a new shared state
-pub fn new_shared_state() -> SharedState {
-    Arc::new(RwLock::new(McpState::new()))
+/// Create a new shared state with the given config
+pub fn new_shared_state(config: config::Config) -> SharedState {
+    Arc::new(RwLock::new(McpState::new(config)))
 }
 
 /// Run the MCP server on stdio
@@ -122,7 +259,10 @@ pub async fn run_mcp_server(state: SharedState) -> Result<()> {
 }
 
 /// Handle a single MCP request and return the response
-pub async fn handle_request(request: JsonRpcRequest, state: SharedState) -> Option<JsonRpcResponse> {
+pub async fn handle_request(
+    request: JsonRpcRequest,
+    state: SharedState,
+) -> Option<JsonRpcResponse> {
     let id = request.id.clone();
 
     match request.method.as_str() {
@@ -133,8 +273,6 @@ pub async fn handle_request(request: JsonRpcRequest, state: SharedState) -> Opti
         }
         "tools/list" => Some(handle_list_tools(id)),
         "tools/call" => Some(handle_call_tool(id, request.params, state).await),
-        "resources/list" => Some(handle_list_resources(id, state).await),
-        "resources/read" => Some(handle_read_resource(id, request.params, state).await),
         "ping" => Some(JsonRpcResponse::success(id, json!({}))),
         _ => Some(JsonRpcResponse::error(
             id,
@@ -151,10 +289,7 @@ fn handle_initialize(id: Option<Value>) -> JsonRpcResponse {
             tools: Some(ToolsCapability {
                 list_changed: Some(true),
             }),
-            resources: Some(ResourcesCapability {
-                subscribe: Some(false),
-                list_changed: Some(true),
-            }),
+            resources: None,
             prompts: None,
         },
         server_info: ServerInfo {
@@ -169,86 +304,28 @@ fn handle_initialize(id: Option<Value>) -> JsonRpcResponse {
 fn handle_list_tools(id: Option<Value>) -> JsonRpcResponse {
     let tools = vec![
         Tool {
-            name: "connect".to_string(),
-            description: "Connect to the webhook relay server".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "server_address": {
-                        "type": "string",
-                        "description": "The gRPC server address (e.g., http://localhost:50051)"
-                    },
-                    "access_token": {
-                        "type": "string",
-                        "description": "OAuth2 access token for authentication"
-                    }
-                },
-                "required": ["server_address", "access_token"]
-            }),
-        },
-        Tool {
-            name: "disconnect".to_string(),
-            description: "Disconnect from the webhook relay server".to_string(),
+            name: "get_config".to_string(),
+            description: "Get the current webhook relay configuration".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
             }),
         },
         Tool {
-            name: "get_endpoint".to_string(),
-            description: "Get the webhook endpoint URL assigned to this client".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
-        Tool {
-            name: "list_pending_webhooks".to_string(),
-            description: "List pending webhook requests that need responses".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
-        Tool {
-            name: "get_webhook".to_string(),
-            description: "Get details of a specific pending webhook request".to_string(),
+            name: "get_request_log".to_string(),
+            description: "Get the log of webhook requests and responses, sorted from newest to oldest".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "request_id": {
-                        "type": "string",
-                        "description": "The ID of the webhook request"
-                    }
-                },
-                "required": ["request_id"]
-            }),
-        },
-        Tool {
-            name: "respond_to_webhook".to_string(),
-            description: "Send a response to a pending webhook request".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "request_id": {
-                        "type": "string",
-                        "description": "The ID of the webhook request to respond to"
-                    },
-                    "status_code": {
+                    "page": {
                         "type": "integer",
-                        "description": "HTTP status code (e.g., 200, 404, 500)"
+                        "description": "Page number (0-indexed, default: 0)"
                     },
-                    "headers": {
-                        "type": "object",
-                        "description": "HTTP response headers",
-                        "additionalProperties": { "type": "string" }
-                    },
-                    "body": {
-                        "type": "string",
-                        "description": "HTTP response body"
+                    "page_size": {
+                        "type": "integer",
+                        "description": "Number of entries per page (default: 10, max: 100)"
                     }
-                },
-                "required": ["request_id", "status_code"]
+                }
             }),
         },
     ];
@@ -279,402 +356,105 @@ async fn handle_call_tool(
     };
 
     let result = match params.name.as_str() {
-        "connect" => tool_connect(params.arguments, state).await,
-        "disconnect" => tool_disconnect(state).await,
-        "get_endpoint" => tool_get_endpoint(state).await,
-        "list_pending_webhooks" => tool_list_pending_webhooks(state).await,
-        "get_webhook" => tool_get_webhook(params.arguments, state).await,
-        "respond_to_webhook" => tool_respond_to_webhook(params.arguments, state).await,
+        "get_config" => tool_get_config(state).await,
+        "get_request_log" => tool_get_request_log(params.arguments, state).await,
         _ => CallToolResult::error(format!("Unknown tool: {}", params.name)),
     };
 
     JsonRpcResponse::success(id, serde_json::to_value(result).unwrap())
 }
 
-/// Connect to the relay server
-pub async fn tool_connect(args: Option<Value>, state: SharedState) -> CallToolResult {
-    let args = match args {
-        Some(a) => a,
-        None => return CallToolResult::error("Missing arguments".to_string()),
-    };
-
-    let server_address = match args.get("server_address").and_then(|v| v.as_str()) {
-        Some(s) => s.to_string(),
-        None => return CallToolResult::error("Missing server_address".to_string()),
-    };
-
-    let access_token = match args.get("access_token").and_then(|v| v.as_str()) {
-        Some(s) => s.to_string(),
-        None => return CallToolResult::error("Missing access_token".to_string()),
-    };
-
-    // Connect to the gRPC server
-    let channel = match Channel::from_shared(server_address.clone()) {
-        Ok(c) => match c.connect().await {
-            Ok(ch) => ch,
-            Err(e) => return CallToolResult::error(format!("Failed to connect: {}", e)),
-        },
-        Err(e) => return CallToolResult::error(format!("Invalid server address: {}", e)),
-    };
-
-    // Get config to register and get endpoint
-    let mut client = RelayServiceClient::new(channel.clone());
-    let mut request = Request::new(GetConfigRequest {});
-
-    let token: MetadataValue<_> = match format!("Bearer {}", access_token).parse() {
-        Ok(t) => t,
-        Err(e) => return CallToolResult::error(format!("Invalid token format: {}", e)),
-    };
-    request.metadata_mut().insert("authorization", token);
-
-    let config = match client.get_config(request).await {
-        Ok(response) => match response.into_inner().config {
-            Some(c) => c,
-            None => return CallToolResult::error("Server returned empty config".to_string()),
-        },
-        Err(e) => return CallToolResult::error(format!("GetConfig failed: {}", e)),
-    };
-
-    let endpoint = config.endpoint.clone();
-
-    // Update state
-    {
-        let mut state = state.write().await;
-        state.channel = Some(channel.clone());
-        state.access_token = Some(access_token.clone());
-        state.server_address = server_address;
-        state.endpoint = Some(endpoint.clone());
-        state.connected = true;
-    }
-
-    // Start webhook stream in background
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        if let Err(e) = run_webhook_stream(channel, access_token, state_clone).await {
-            tracing::error!("Webhook stream error: {}", e);
-        }
-    });
-
-    CallToolResult::text(format!(
-        "Connected successfully!\nYour webhook endpoint: {}",
-        endpoint
-    ))
-}
-
-async fn run_webhook_stream(
-    channel: Channel,
-    access_token: String,
-    state: SharedState,
-) -> Result<()> {
-    let mut client = RelayServiceClient::new(channel);
-
-    let (response_tx, response_rx) = mpsc::channel::<HttpResponse>(32);
-    let response_stream = tokio_stream::wrappers::ReceiverStream::new(response_rx);
-
-    // Store the sender in state
-    {
-        let mut state = state.write().await;
-        state.response_tx = Some(response_tx);
-    }
-
-    let mut request = Request::new(response_stream);
-    let token: MetadataValue<_> = format!("Bearer {}", access_token).parse()?;
-    request.metadata_mut().insert("authorization", token);
-
-    let response = client
-        .do_webhook(request)
-        .await
-        .context("DoWebhook RPC failed")?;
-
-    let mut request_stream = response.into_inner();
-
-    tracing::info!("Connected to webhook stream");
-
-    while let Some(result) = request_stream.next().await {
-        match result {
-            Ok(http_request) => {
-                let request_id = http_request.request_id.clone();
-                tracing::info!(
-                    request_id = %request_id,
-                    method = %http_request.method,
-                    path = %http_request.path,
-                    "Received webhook request"
-                );
-
-                // Store pending request
-                {
-                    let mut state = state.write().await;
-                    state.pending_requests.insert(request_id, http_request);
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Error receiving from server");
-                break;
-            }
-        }
-    }
-
-    // Mark as disconnected
-    {
-        let mut state = state.write().await;
-        state.connected = false;
-        state.response_tx = None;
-    }
-
-    tracing::info!("Webhook stream ended");
-    Ok(())
-}
-
-/// Disconnect from the relay server
-pub async fn tool_disconnect(state: SharedState) -> CallToolResult {
-    let mut state = state.write().await;
-
-    if !state.connected {
-        return CallToolResult::error("Not connected".to_string());
-    }
-
-    state.channel = None;
-    state.access_token = None;
-    state.endpoint = None;
-    state.pending_requests.clear();
-    state.response_tx = None;
-    state.connected = false;
-
-    CallToolResult::text("Disconnected from webhook relay server".to_string())
-}
-
-/// Get the webhook endpoint
-pub async fn tool_get_endpoint(state: SharedState) -> CallToolResult {
+/// Get config tool implementation
+async fn tool_get_config(state: SharedState) -> CallToolResult {
     let state = state.read().await;
+    let config = state.get_config();
 
-    match &state.endpoint {
-        Some(endpoint) => CallToolResult::text(format!("Webhook endpoint: {}", endpoint)),
-        None => CallToolResult::error("Not connected. Use 'connect' tool first.".to_string()),
+    let mut output = String::new();
+    output.push_str("Webhook Relay Configuration:\n\n");
+    output.push_str(&format!("Server Address: {}\n", config.server_address));
+    output.push_str(&format!("Local Endpoint: {}\n", config.local_endpoint));
+    output.push_str("\nOAuth Configuration:\n");
+    output.push_str(&format!("  Client ID: {}\n", config.oauth.client_id));
+    output.push_str(&format!("  Issuer: {}\n", config.oauth.issuer));
+    if let Some(auth_url) = &config.oauth.auth_url {
+        output.push_str(&format!("  Auth URL: {}\n", auth_url));
     }
-}
-
-/// List pending webhooks
-pub async fn tool_list_pending_webhooks(state: SharedState) -> CallToolResult {
-    let state = state.read().await;
-
-    if !state.connected {
-        return CallToolResult::error("Not connected. Use 'connect' tool first.".to_string());
+    if let Some(token_url) = &config.oauth.token_url {
+        output.push_str(&format!("  Token URL: {}\n", token_url));
+    }
+    if let Some(port) = config.oauth.callback_port {
+        output.push_str(&format!("  Callback Port: {}\n", port));
     }
 
-    if state.pending_requests.is_empty() {
-        return CallToolResult::text("No pending webhook requests".to_string());
-    }
-
-    let mut output = String::from("Pending webhook requests:\n\n");
-    for (id, req) in &state.pending_requests {
-        output.push_str(&format!(
-            "- {} {} {} (ID: {})\n",
-            req.method, req.path, req.query, id
-        ));
+    output.push_str("\nConnection Status:\n");
+    if state.is_connected() {
+        output.push_str("  Status: Connected\n");
+        if let Some(endpoint) = state.get_endpoint() {
+            output.push_str(&format!("  Webhook Endpoint: {}\n", endpoint));
+        }
+    } else {
+        output.push_str("  Status: Disconnected\n");
     }
 
     CallToolResult::text(output)
 }
 
-/// Get details of a specific webhook
-pub async fn tool_get_webhook(args: Option<Value>, state: SharedState) -> CallToolResult {
-    let args = match args {
-        Some(a) => a,
-        None => return CallToolResult::error("Missing arguments".to_string()),
-    };
-
-    let request_id = match args.get("request_id").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => return CallToolResult::error("Missing request_id".to_string()),
-    };
-
-    let state = state.read().await;
-
-    match state.pending_requests.get(request_id) {
-        Some(req) => {
-            let headers_str: String = req
-                .headers
-                .iter()
-                .map(|(k, v)| format!("  {}: {}", k, v))
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            let body_str = String::from_utf8_lossy(&req.body);
-
-            let output = format!(
-                "Webhook Request Details:\n\
-                 ID: {}\n\
-                 Method: {}\n\
-                 Path: {}\n\
-                 Query: {}\n\
-                 Headers:\n{}\n\
-                 Body:\n{}",
-                req.request_id, req.method, req.path, req.query, headers_str, body_str
-            );
-
-            CallToolResult::text(output)
-        }
-        None => CallToolResult::error(format!("Request {} not found", request_id)),
-    }
-}
-
-/// Respond to a pending webhook
-pub async fn tool_respond_to_webhook(args: Option<Value>, state: SharedState) -> CallToolResult {
-    let args = match args {
-        Some(a) => a,
-        None => return CallToolResult::error("Missing arguments".to_string()),
-    };
-
-    let request_id = match args.get("request_id").and_then(|v| v.as_str()) {
-        Some(s) => s.to_string(),
-        None => return CallToolResult::error("Missing request_id".to_string()),
-    };
-
-    let status_code = match args.get("status_code").and_then(|v| v.as_u64()) {
-        Some(s) => s as u32,
-        None => return CallToolResult::error("Missing status_code".to_string()),
-    };
-
-    let headers: HashMap<String, String> = args
-        .get("headers")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    let body = args
-        .get("body")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .as_bytes()
-        .to_vec();
-
-    let mut state = state.write().await;
-
-    // Remove from pending
-    if state.pending_requests.remove(&request_id).is_none() {
-        return CallToolResult::error(format!("Request {} not found", request_id));
-    }
-
-    // Send response
-    let response = HttpResponse {
-        request_id: request_id.clone(),
-        status_code,
-        headers,
-        body,
-    };
-
-    match &state.response_tx {
-        Some(tx) => {
-            if let Err(e) = tx.send(response).await {
-                return CallToolResult::error(format!("Failed to send response: {}", e));
-            }
-        }
-        None => return CallToolResult::error("Not connected to server".to_string()),
-    }
-
-    CallToolResult::text(format!(
-        "Response sent for request {} with status {}",
-        request_id, status_code
-    ))
-}
-
-async fn handle_list_resources(id: Option<Value>, state: SharedState) -> JsonRpcResponse {
-    let state = state.read().await;
-
-    let mut resources = vec![];
-
-    if state.connected {
-        if let Some(endpoint) = &state.endpoint {
-            resources.push(Resource {
-                uri: "webhook://endpoint".to_string(),
-                name: "Webhook Endpoint".to_string(),
-                description: Some(format!("Your webhook endpoint: {}", endpoint)),
-                mime_type: Some("text/plain".to_string()),
-            });
-        }
-
-        resources.push(Resource {
-            uri: "webhook://pending".to_string(),
-            name: "Pending Webhooks".to_string(),
-            description: Some("List of pending webhook requests".to_string()),
-            mime_type: Some("application/json".to_string()),
-        });
-    }
-
-    let result = ListResourcesResult { resources };
-    JsonRpcResponse::success(id, serde_json::to_value(result).unwrap())
-}
-
-async fn handle_read_resource(
-    id: Option<Value>,
-    params: Option<Value>,
-    state: SharedState,
-) -> JsonRpcResponse {
-    let params: ReadResourceParams = match params {
-        Some(p) => match serde_json::from_value(p) {
-            Ok(p) => p,
-            Err(e) => {
-                return JsonRpcResponse::error(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    &format!("Invalid params: {}", e),
-                )
-            }
-        },
-        None => {
-            return JsonRpcResponse::error(id, error_codes::INVALID_PARAMS, "Missing params")
-        }
-    };
+/// Get request log tool implementation
+async fn tool_get_request_log(args: Option<Value>, state: SharedState) -> CallToolResult {
+    let page = args
+        .as_ref()
+        .and_then(|a| a.get("page"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    
+    let page_size = args
+        .as_ref()
+        .and_then(|a| a.get("page_size"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v.min(100) as usize)
+        .unwrap_or(10);
 
     let state = state.read().await;
+    let (entries, total) = state.get_request_log(page, page_size);
 
-    let content = match params.uri.as_str() {
-        "webhook://endpoint" => match &state.endpoint {
-            Some(endpoint) => ResourceContent {
-                uri: params.uri,
-                mime_type: Some("text/plain".to_string()),
-                text: Some(endpoint.clone()),
-                blob: None,
-            },
-            None => {
-                return JsonRpcResponse::error(
-                    id,
-                    error_codes::INTERNAL_ERROR,
-                    "Not connected",
-                )
-            }
-        },
-        "webhook://pending" => {
-            let pending: Vec<_> = state
-                .pending_requests
-                .iter()
-                .map(|(id, req)| {
-                    json!({
-                        "request_id": id,
-                        "method": req.method,
-                        "path": req.path,
-                        "query": req.query,
-                    })
-                })
-                .collect();
-
-            ResourceContent {
-                uri: params.uri,
-                mime_type: Some("application/json".to_string()),
-                text: Some(serde_json::to_string_pretty(&pending).unwrap()),
-                blob: None,
-            }
+    if entries.is_empty() {
+        if total == 0 {
+            return CallToolResult::text("No webhook requests logged yet.".to_string());
+        } else {
+            return CallToolResult::text(format!(
+                "No entries on page {} (total entries: {})",
+                page, total
+            ));
         }
-        _ => {
-            return JsonRpcResponse::error(
-                id,
-                error_codes::INVALID_PARAMS,
-                &format!("Unknown resource: {}", params.uri),
-            )
-        }
-    };
+    }
 
-    let result = ReadResourceResult {
-        contents: vec![content],
-    };
-    JsonRpcResponse::success(id, serde_json::to_value(result).unwrap())
+    let total_pages = (total + page_size - 1) / page_size;
+    let mut output = format!(
+        "Request Log (Page {} of {}, {} total entries):\n\n",
+        page + 1,
+        total_pages,
+        total
+    );
+
+    for entry in entries {
+        output.push_str(&format!("--- Request {} ---\n", entry.request_id));
+        output.push_str(&format!("Timestamp: {}\n", entry.timestamp.format("%Y-%m-%d %H:%M:%S UTC")));
+        output.push_str(&format!("Method: {}\n", entry.method));
+        output.push_str(&format!("Path: {}\n", entry.path));
+        if !entry.query.is_empty() {
+            output.push_str(&format!("Query: {}\n", entry.query));
+        }
+        output.push_str(&format!("Request Headers: {:?}\n", entry.request_headers));
+        if !entry.request_body.is_empty() {
+            output.push_str(&format!("Request Body: {}\n", entry.request_body));
+        }
+        output.push_str(&format!("Response Status: {}\n", entry.response_status));
+        output.push_str(&format!("Response Headers: {:?}\n", entry.response_headers));
+        if !entry.response_body.is_empty() {
+            output.push_str(&format!("Response Body: {}\n", entry.response_body));
+        }
+        output.push('\n');
+    }
+
+    CallToolResult::text(output)
 }

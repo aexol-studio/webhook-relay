@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use api::{ClientCertificate, HttpRequest};
@@ -13,8 +12,7 @@ use axum::{
     routing::any,
 };
 
-use crate::client_manager::ClientManager;
-use crate::grpc::send_request_to_client;
+use crate::grpc::{ClientConnections, send_request_to_client};
 
 // Standard X-Forwarded headers
 const X_FORWARDED_FOR: &str = "x-forwarded-for";
@@ -27,7 +25,7 @@ pub struct TlsClientCert(pub Option<Vec<u8>>);
 
 #[derive(Clone)]
 pub struct HttpState {
-    pub client_manager: Arc<ClientManager>,
+    pub connections: ClientConnections,
     pub webhook_timeout: Duration,
 }
 
@@ -50,12 +48,12 @@ async fn handle_webhook(
     let route = &params.route;
     let path = params.path.as_deref().unwrap_or("");
 
-    // Validate route format (24 hex chars)
-    if route.len() != 24 || !route.chars().all(|c| c.is_ascii_hexdigit()) {
+    // Validate route format (64 hex chars - full SHA256 hash)
+    if route.len() != 64 || !route.chars().all(|c| c.is_ascii_hexdigit()) {
         return (StatusCode::NOT_FOUND, HeaderMap::new(), Bytes::new());
     }
 
-    let client = match state.client_manager.get_client(route).await {
+    let client = match state.connections.read().await.get(route).cloned() {
         Some(client) => client,
         None => {
             tracing::debug!(route = %route, "No client found for route");

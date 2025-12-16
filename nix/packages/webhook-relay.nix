@@ -62,8 +62,9 @@
     dontFixup = true;
   };
 
-  # Darwin target triple
-  darwinTargetTriple = "x86_64-apple-darwin";
+  # Darwin target triples
+  darwinX86TargetTriple = "x86_64-apple-darwin";
+  darwinAarch64TargetTriple = "aarch64-apple-darwin";
 
   # Rust toolchain from rust-toolchain.toml with all cross-compilation targets
   rustToolchainWithTargets =
@@ -73,6 +74,7 @@
         "x86_64-pc-windows-gnu"
         "x86_64-unknown-linux-musl"
         "x86_64-apple-darwin"
+        "aarch64-apple-darwin"
       ];
     };
 
@@ -86,7 +88,6 @@
     inherit src;
     strictDeps = true;
     pname = "webhook-relay";
-    version = "0.1.0";
     doCheck = false;
   };
 
@@ -166,18 +167,18 @@
   );
 
   # ============================================================================
-  # Darwin Package (cross-compilation with cargo-zigbuild)
+  # Darwin x86_64 Package (cross-compilation with cargo-zigbuild)
   # ============================================================================
 
   # Zigbuild cargo command - used for both deps and final build
   # Must capture JSON output for crane's install hook
-  zigbuildCargoCommand = ''
+  zigbuildCargoCommand = target: ''
     export HOME=$(mktemp -d)
     cargoBuildLog=$(mktemp cargoBuildLogXXXX.json)
-    cargo zigbuild --profile release --message-format json-render-diagnostics --locked -p server -p client -p mcp-client --target ${darwinTargetTriple} >"$cargoBuildLog"
+    cargo zigbuild --profile release --message-format json-render-diagnostics --locked -p server -p client -p mcp-client --target ${target} >"$cargoBuildLog"
   '';
 
-  commonArgsDarwin =
+  commonArgsDarwinX86 =
     commonArgs
     // {
       nativeBuildInputs = [
@@ -186,8 +187,8 @@
         pkgs.zig
       ];
 
-      CARGO_BUILD_TARGET = darwinTargetTriple;
-      cargoExtraArgs = "--locked -p server -p client -p mcp-client --target ${darwinTargetTriple}";
+      CARGO_BUILD_TARGET = darwinX86TargetTriple;
+      cargoExtraArgs = "--locked -p server -p client -p mcp-client --target ${darwinX86TargetTriple}";
 
       # Environment for cargo-zigbuild
       SDKROOT = macOSSDK;
@@ -199,16 +200,55 @@
       CARGO_INCREMENTAL = "0";
 
       # Override to use cargo zigbuild
-      buildPhaseCargoCommand = zigbuildCargoCommand;
+      buildPhaseCargoCommand = zigbuildCargoCommand darwinX86TargetTriple;
     };
 
   # Build deps using zigbuild
-  cargoArtifactsDarwin = craneLib.buildDepsOnly commonArgsDarwin;
+  cargoArtifactsDarwinX86 = craneLib.buildDepsOnly commonArgsDarwinX86;
 
-  darwinPackage = craneLib.buildPackage (
-    commonArgsDarwin
+  darwinX86Package = craneLib.buildPackage (
+    commonArgsDarwinX86
     // {
-      cargoArtifacts = cargoArtifactsDarwin;
+      cargoArtifacts = cargoArtifactsDarwinX86;
+    }
+  );
+
+  # ============================================================================
+  # Darwin Aarch64 Package (cross-compilation with cargo-zigbuild)
+  # ============================================================================
+
+  commonArgsDarwinAarch64 =
+    commonArgs
+    // {
+      nativeBuildInputs = [
+        pkgs.protobuf
+        pkgs.cargo-zigbuild
+        pkgs.zig
+      ];
+
+      CARGO_BUILD_TARGET = darwinAarch64TargetTriple;
+      cargoExtraArgs = "--locked -p server -p client -p mcp-client --target ${darwinAarch64TargetTriple}";
+
+      # Environment for cargo-zigbuild
+      SDKROOT = macOSSDK;
+      MACOSX_DEPLOYMENT_TARGET = macOSSDKVersion;
+      ZIG_LIB_DIR = "${pkgs.zig}/lib/zig";
+      CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS = "-C link-arg=-F${macOSSDK}/System/Library/Frameworks -C link-arg=-L${macOSSDK}/usr/lib";
+
+      # Disable incremental compilation to help with fingerprint consistency
+      CARGO_INCREMENTAL = "0";
+
+      # Override to use cargo zigbuild
+      buildPhaseCargoCommand = zigbuildCargoCommand darwinAarch64TargetTriple;
+    };
+
+  # Build deps using zigbuild
+  cargoArtifactsDarwinAarch64 = craneLib.buildDepsOnly commonArgsDarwinAarch64;
+
+  darwinAarch64Package = craneLib.buildPackage (
+    commonArgsDarwinAarch64
+    // {
+      cargoArtifacts = cargoArtifactsDarwinAarch64;
     }
   );
 
@@ -227,6 +267,7 @@
       mkdir -p $out/bin/x86_64-unknown-linux-musl
       mkdir -p $out/bin/x86_64-pc-windows-gnu
       mkdir -p $out/bin/x86_64-apple-darwin
+      mkdir -p $out/bin/aarch64-apple-darwin
 
       # Copy Linux binaries (statically linked with musl)
       cp ${linuxPackage}/bin/server ${linuxPackage}/bin/client ${linuxPackage}/bin/mcp-client $out/bin/x86_64-unknown-linux-musl
@@ -234,8 +275,11 @@
       # Copy Windows binaries
       cp ${windowsPackage}/bin/server.exe ${windowsPackage}/bin/client.exe ${windowsPackage}/bin/mcp-client.exe $out/bin/x86_64-pc-windows-gnu
 
-      # Copy Darwin binaries
-      cp ${darwinPackage}/bin/server ${darwinPackage}/bin/client ${darwinPackage}/bin/mcp-client $out/bin/x86_64-apple-darwin
+      # Copy Darwin x86_64 binaries
+      cp ${darwinX86Package}/bin/server ${darwinX86Package}/bin/client ${darwinX86Package}/bin/mcp-client $out/bin/x86_64-apple-darwin
+
+      # Copy Darwin aarch64 binaries
+      cp ${darwinAarch64Package}/bin/server ${darwinAarch64Package}/bin/client ${darwinAarch64Package}/bin/mcp-client $out/bin/aarch64-apple-darwin
 
       runHook postInstall
     '';

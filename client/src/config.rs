@@ -1,6 +1,6 @@
 //! Client-specific configuration
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -29,9 +29,14 @@ impl Config {
         config_path()
     }
     
-    /// Load configuration from file
+    /// Load configuration from the default path
     pub fn load() -> Result<Self> {
-        let path = Self::config_path()?;
+        Self::load_from(Self::config_path()?)
+    }
+    
+    /// Load configuration from a specific path
+    pub fn load_from<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
         
         if !path.exists() {
             bail!(
@@ -40,7 +45,7 @@ impl Config {
             );
         }
         
-        let contents = std::fs::read_to_string(&path)
+        let contents = std::fs::read_to_string(path)
             .context("Failed to read config file")?;
         
         toml::from_str(&contents)

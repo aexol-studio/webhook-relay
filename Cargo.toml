@@ -32,6 +32,7 @@ toml = "0.8"
 anyhow = "1"
 thiserror = "1"
 # Utilities
+async-trait = "0.1"
 uuid = {version = "1", features = ["v4"]}
 rand = "0.8"
 tracing = "0.1"
@@ -40,7 +41,8 @@ dirs = "6"
 keyring = "3"
 hex = "0.4"
 open = "5"
+chrono = {version = "0.4", features = ["serde"]}
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
