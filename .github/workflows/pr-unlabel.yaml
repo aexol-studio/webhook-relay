@@ -1,0 +1,15 @@
+name: pr-unlabel
+on:
+  pull_request_target:
+    types: [synchronize]
+    branches:
+      - main
+jobs:
+  remove-safe-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove safe-to-build label
+        run: gh pr edit ${{ github.event.pull_request.number }} --remove-label "safe-to-build" --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        continue-on-error: true

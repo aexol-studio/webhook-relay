@@ -2,6 +2,10 @@ name: build
 on:
   workflow_call:
     inputs:
+      ref:
+        required: false
+        type: string
+        default: ""
       push-image:
         required: false
         type: boolean
@@ -21,6 +25,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: nixbuild/nix-quick-install-action@v34
         with:
           nix_conf: |

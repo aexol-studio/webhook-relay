@@ -1,11 +1,14 @@
 name: pr
 on:
-  pull_request:
+  pull_request_target:
+    types: [labeled]
     branches:
       - main
 jobs:
   check-pr:
+    if: github.event.label.name == 'safe-to-build'
     uses: ./.github/workflows/build.yaml
     with:
+      ref: ${{ github.event.pull_request.head.sha }}
       push-image: false
       create-release: false
