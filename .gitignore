@@ -1,0 +1,16 @@
+.direnv
+.devenv
+.pre-commit-config.yaml
+.helix
+target
+node_modules
+result
+result-*
+dist
+bin
+bun.lockb
+
+
+# Added by cargo
+
+/target

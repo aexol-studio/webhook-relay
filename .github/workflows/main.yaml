@@ -1,0 +1,16 @@
+name: release
+on:
+  push:
+    branches:
+      - "main"
+    tags:
+      - "v*"
+jobs:
+  build-and-release:
+    uses: ./.github/workflows/build.yaml
+    with:
+      push-image: true
+      create-release: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    permissions:
+      contents: write
+      packages: write

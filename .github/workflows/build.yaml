@@ -1,0 +1,98 @@
+name: build
+on:
+  workflow_call:
+    inputs:
+      push-image:
+        required: false
+        type: boolean
+        default: false
+      create-release:
+        required: false
+        type: boolean
+        default: false
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-server
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nixbuild/nix-quick-install-action@v34
+        with:
+          nix_conf: |
+            keep-env-derivations = true
+            keep-outputs = true
+      - name: Restore and save Nix store
+        uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+          gc-max-store-size-linux: 5G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: 0
+          purge-primary-key: never
+      - name: Setup netrc for macOS SDK download
+        run: |
+          echo "machine u519201-sub1.your-storagebox.de login u519201-sub1 password ${{ secrets.STORAGEBOX_PASSWORD }}" > ~/.netrc
+          chmod 600 ~/.netrc
+      - name: Run checks
+        run: nix flake check --impure
+      - name: Build binaries
+        run: nix build .#webhook-relay -o result-binaries
+      - name: Build image
+        run: nix build .#server-image -o result-image
+      - name: Prepare release artifacts
+        if: inputs.create-release
+        run: |
+          mkdir -p release-artifacts
+
+          # Linux binaries
+          cp result-binaries/bin/x86_64-unknown-linux-musl/server release-artifacts/server-x86_64-linux
+          cp result-binaries/bin/x86_64-unknown-linux-musl/client release-artifacts/client-x86_64-linux
+          cp result-binaries/bin/x86_64-unknown-linux-musl/mcp-client release-artifacts/mcp-client-x86_64-linux
+
+          # Windows binaries
+          cp result-binaries/bin/x86_64-pc-windows-gnu/server.exe release-artifacts/server-x86_64-windows.exe
+          cp result-binaries/bin/x86_64-pc-windows-gnu/client.exe release-artifacts/client-x86_64-windows.exe
+          cp result-binaries/bin/x86_64-pc-windows-gnu/mcp-client.exe release-artifacts/mcp-client-x86_64-windows.exe
+
+          # macOS binaries
+          cp result-binaries/bin/x86_64-apple-darwin/server release-artifacts/server-x86_64-darwin
+          cp result-binaries/bin/x86_64-apple-darwin/client release-artifacts/client-x86_64-darwin
+          cp result-binaries/bin/x86_64-apple-darwin/mcp-client release-artifacts/mcp-client-x86_64-darwin
+      - name: Create GitHub Release
+        if: inputs.create-release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          generate_release_notes: true
+      - name: Generate image tag
+        if: inputs.push-image
+        id: image-info
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="latest"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+      - name: Load and tag image
+        if: inputs.push-image
+        run: |
+          IMAGE_ID=$(podman load --quiet < ./result-image | cut -d ' ' -f 3)
+          podman tag "$IMAGE_ID" "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image-info.outputs.tag }}"
+      - name: Push image to GHCR
+        if: inputs.push-image
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ env.IMAGE_NAME }}
+          tags: ${{ steps.image-info.outputs.tag }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}

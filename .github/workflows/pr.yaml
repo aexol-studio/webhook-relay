@@ -1,0 +1,11 @@
+name: pr
+on:
+  pull_request:
+    branches:
+      - main
+jobs:
+  check-pr:
+    uses: ./.github/workflows/build.yaml
+    with:
+      push-image: false
+      create-release: false

@@ -1,0 +1,46 @@
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"
+
+[workspace]
+members = ["api", "server", "client", "mcp-client", "common", "tests"]
+resolver = "2"
+
+[workspace.dependencies]
+# Async
+tokio = {version = "1", features = ["full"]}
+tokio-stream = "0.1"
+# gRPC
+tonic = {version = "0.14", default-features = false, features = ["channel", "codegen", "transport", "router"]}
+tonic-prost = "0.14"
+prost = "0.14"
+tonic-build = "0.14"
+tonic-prost-build = "0.14"
+# HTTP
+axum = "0.8"
+reqwest = {version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"]}
+# Auth
+oauth2 = {version = "5.0", features = ["reqwest"]}
+jsonwebtoken = {version = "10", default-features = false, features = ["rust_crypto"]}
+# Serialization
+serde = {version = "1", features = ["derive"]}
+serde_json = "1"
+toml = "0.8"
+# Error handling
+anyhow = "1"
+thiserror = "1"
+# Utilities
+uuid = {version = "1", features = ["v4"]}
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = {version = "0.3", features = ["env-filter"]}
+dirs = "6"
+keyring = "3"
+hex = "0.4"
+open = "5"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"

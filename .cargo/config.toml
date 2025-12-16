@@ -1,0 +1,9 @@
+# Cross-compilation configuration
+
+[target.x86_64-apple-darwin]
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+runner = "wine64"
+
+# cargo-zigbuild handles this target
