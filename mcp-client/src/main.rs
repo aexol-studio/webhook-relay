@@ -14,14 +14,16 @@ fn print_usage() {
     eprintln!("Usage: mcp-client [OPTIONS]");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --init              Create default config file");
-    eprintln!("  --config <PATH>     Path to config file (default: ~/.config/webhook-relay/config.toml)");
-    eprintln!("  --help              Show this help message");
+    eprintln!("  --init                 Create default config file");
+    eprintln!("  --config <PATH>        Path to config file (default: ~/.config/webhook-relay/config.toml)");
+    eprintln!("  --session-id <ID>      Override session_id (also supports config)");
+    eprintln!("  --help                 Show this help message");
 }
 
-fn parse_args() -> Result<Option<PathBuf>> {
+fn parse_args() -> Result<(Option<PathBuf>, Option<String>)> {
     let args: Vec<String> = std::env::args().collect();
     let mut config_path: Option<PathBuf> = None;
+    let mut session_id: Option<String> = None;
     let mut i = 1;
 
     while i < args.len() {
@@ -46,6 +48,13 @@ fn parse_args() -> Result<Option<PathBuf>> {
                 }
                 config_path = Some(PathBuf::from(&args[i]));
             }
+            "--session-id" => {
+                i += 1;
+                if i >= args.len() {
+                    anyhow::bail!("--session-id requires a value");
+                }
+                session_id = Some(args[i].clone());
+            }
             arg if arg.starts_with('-') => {
                 anyhow::bail!("Unknown option: {}", arg);
             }
@@ -56,7 +65,7 @@ fn parse_args() -> Result<Option<PathBuf>> {
         i += 1;
     }
 
-    Ok(config_path)
+    Ok((config_path, session_id))
 }
 
 #[tokio::main]
@@ -71,7 +80,7 @@ async fn main() -> Result<()> {
         .init();
 
     // Parse arguments
-    let config_path = parse_args()?;
+    let (config_path, session_id_override) = parse_args()?;
 
     // Load configuration
     let mut config = match config_path {
@@ -81,6 +90,10 @@ async fn main() -> Result<()> {
         }
         None => Config::load()?,
     };
+
+    if session_id_override.is_some() {
+        config.session_id = session_id_override;
+    }
 
     tracing::info!(
         server_address = %config.server_address,
@@ -101,8 +114,12 @@ async fn main() -> Result<()> {
     let access_token = auth_manager.get_access_token().await?;
 
     // Connect to relay server
-    let mut relay_client =
-        common::RelayClient::connect(&config.server_address, access_token).await?;
+    let mut relay_client = common::RelayClient::connect_with_session(
+        &config.server_address,
+        access_token,
+        config.session_id.clone(),
+    )
+    .await?;
 
     // Get config (establishes session)
     let client_config = relay_client.get_config().await?;

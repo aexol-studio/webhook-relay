@@ -34,6 +34,10 @@ pub mod config {
         pub server_address: String,
         pub local_endpoint: String,
 
+        /// Optional session ID to reuse across runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub session_id: Option<String>,
+
         #[serde(default)]
         pub oauth: OAuthConfig,
     }
@@ -79,6 +83,7 @@ pub mod config {
             let config = Config {
                 server_address: "http://localhost:50051".to_string(),
                 local_endpoint: "http://localhost:3000".to_string(),
+                session_id: None,
                 oauth: OAuthConfig {
                     client_id: "webhook-relay-cli".to_string(),
                     issuer: "http://localhost:8180/realms/relay".to_string(),

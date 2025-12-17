@@ -58,6 +58,7 @@ async fn test_client_registration() {
         server_address: grpc_addr,
         auth_provider: test_auth_provider(),
         local_endpoint: "http://localhost:9999".to_string(), // doesn't matter for this test
+        session_id: None,
     })
     .await
     .expect("Failed to start client");
@@ -105,6 +106,7 @@ async fn test_webhook_relay_flow() {
         server_address: grpc_addr,
         auth_provider: test_auth_provider(),
         local_endpoint,
+        session_id: None,
     })
     .await
     .expect("Failed to start client");
@@ -203,6 +205,7 @@ async fn test_unauthenticated_rejected() {
         server_address: grpc_addr,
         auth_provider: test_helpers::StaticTokenAuthProvider::empty(),
         local_endpoint: "http://localhost:9999".to_string(),
+        session_id: None,
     })
     .await;
     
@@ -229,6 +232,7 @@ async fn test_invalid_token_rejected() {
         server_address: grpc_addr,
         auth_provider: test_helpers::StaticTokenAuthProvider::invalid(),
         local_endpoint: "http://localhost:9999".to_string(),
+        session_id: None,
     })
     .await;
     
@@ -258,6 +262,7 @@ async fn test_wrong_audience_rejected() {
         server_address: grpc_addr,
         auth_provider: test_auth_provider(),
         local_endpoint: "http://localhost:9999".to_string(),
+        session_id: None,
     })
     .await;
     
@@ -291,6 +296,7 @@ async fn test_x_forwarded_headers() {
         server_address: grpc_addr,
         auth_provider: test_auth_provider(),
         local_endpoint,
+        session_id: None,
     })
     .await
     .expect("Failed to start client");

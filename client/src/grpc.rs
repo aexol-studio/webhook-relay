@@ -8,8 +8,12 @@ pub struct GrpcClient {
 }
 
 impl GrpcClient {
-    pub async fn connect(server_address: &str, access_token: String) -> anyhow::Result<Self> {
-        let relay_client = RelayClient::connect(server_address, access_token).await?;
+    pub async fn connect(
+        server_address: &str,
+        access_token: String,
+        session_id: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let relay_client = RelayClient::connect_with_session(server_address, access_token, session_id).await?;
         Ok(Self { relay_client })
     }
 

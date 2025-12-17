@@ -48,6 +48,7 @@ fn create_mcp_config(grpc_addr: &str, local_endpoint: &str) -> Config {
     Config {
         server_address: grpc_addr.to_string(),
         local_endpoint: local_endpoint.to_string(),
+        session_id: None,
         oauth: OAuthConfig {
             client_id: KEYCLOAK_CLIENT_ID.to_string(),
             issuer: KEYCLOAK_ISSUER.to_string(),

@@ -24,13 +24,26 @@ pub struct RelayClient {
 impl RelayClient {
     /// Connect to the relay server
     pub async fn connect(server_address: &str, access_token: String) -> Result<Self> {
+        Self::connect_with_session(server_address, access_token, None).await
+    }
+
+    /// Connect to the relay server with an optional predefined session ID.
+    ///
+    /// If `session_id` is provided, it is sent on the initial `GetConfig` call.
+    /// This allows clients to resume a previously-known session deterministically.
+    pub async fn connect_with_session(
+        server_address: &str,
+        access_token: String,
+        session_id: Option<String>,
+    ) -> Result<Self> {
         let mut endpoint = Channel::from_shared(server_address.to_string())?;
-        
+
         // Enable TLS for HTTPS endpoints
         if server_address.starts_with("https://") {
-            endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_native_roots())?;
+            endpoint = endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new().with_native_roots())?;
         }
-        
+
         let channel = endpoint
             .connect()
             .await
@@ -39,7 +52,7 @@ impl RelayClient {
         Ok(Self {
             channel,
             access_token,
-            session_id: None,
+            session_id,
         })
     }
 
@@ -50,6 +63,29 @@ impl RelayClient {
             access_token,
             session_id: None,
         }
+    }
+
+    /// Create a new client from an existing channel with a predefined session ID.
+    pub fn from_channel_with_session(
+        channel: Channel,
+        access_token: String,
+        session_id: Option<String>,
+    ) -> Self {
+        Self {
+            channel,
+            access_token,
+            session_id,
+        }
+    }
+
+    /// Override session ID used for subsequent requests.
+    pub fn set_session_id(&mut self, session_id: Option<String>) {
+        self.session_id = session_id;
+    }
+
+    /// Get current session ID, if any.
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
     }
 
     fn create_grpc_client(&self) -> RelayServiceClient<Channel> {
@@ -77,6 +113,11 @@ impl RelayClient {
     /// Get configuration from the server. This also establishes/retrieves the session.
     /// Must be called before `do_webhook` to establish the session.
     pub async fn get_config(&mut self) -> Result<ClientConfig> {
+        tracing::debug!(
+            session_id = ?self.session_id,
+            "Sending GetConfig request"
+        );
+
         let mut client = self.create_grpc_client();
         let mut request = Request::new(GetConfigRequest {});
         self.add_metadata(&mut request)?;
@@ -94,10 +135,17 @@ impl RelayClient {
             }
         }
 
-        response
-            .into_inner()
-            .config
-            .context("Server returned empty config")
+        let resp = response.into_inner();
+        let config = resp.config.context("Server returned empty config")?;
+
+        tracing::debug!(
+            client_id = %config.client_id,
+            endpoint = %config.endpoint,
+            session_id = ?self.session_id,
+            "GetConfig response received"
+        );
+
+        Ok(config)
     }
 
     /// Start the webhook stream. Returns a handle to send responses and a stream of requests.
@@ -109,6 +157,8 @@ impl RelayClient {
         if self.session_id.is_none() {
             anyhow::bail!("Session not established. Call get_config first.");
         }
+
+        tracing::debug!(session_id = ?self.session_id, "Opening webhook stream (DoWebhook)");
 
         let mut client = self.create_grpc_client();
 
@@ -122,6 +172,8 @@ impl RelayClient {
             .do_webhook(request)
             .await
             .context("DoWebhook RPC failed")?;
+
+        tracing::debug!(session_id = ?self.session_id, "Webhook stream established");
 
         Ok((response_tx, response.into_inner()))
     }
@@ -146,10 +198,21 @@ impl RelayClient {
                         request_id = %request_id,
                         method = %http_request.method,
                         path = %http_request.path,
+                        body_len = http_request.body.len(),
+                        headers_len = http_request.headers.len(),
+                        has_client_cert = http_request.client_certificate.is_some(),
                         "Received webhook request"
                     );
 
                     let response = handler(http_request).await;
+
+                    tracing::debug!(
+                        request_id = %response.request_id,
+                        status_code = response.status_code,
+                        response_body_len = response.body.len(),
+                        response_headers_len = response.headers.len(),
+                        "Sending webhook response to server"
+                    );
 
                     if response_tx.send(response).await.is_err() {
                         tracing::error!("Failed to send response to server stream");

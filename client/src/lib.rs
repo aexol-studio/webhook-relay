@@ -22,6 +22,8 @@ pub struct ClientConfig<A: AuthProvider> {
     pub auth_provider: A,
     /// Local endpoint to forward webhooks to (e.g., "http://localhost:3000")
     pub local_endpoint: String,
+    /// Optional session ID to reuse across client runs.
+    pub session_id: Option<String>,
 }
 
 /// Result of starting the client - contains the endpoint URL and a handle to stop it
@@ -52,7 +54,8 @@ pub async fn run_client<A: AuthProvider + 'static>(config: ClientConfig<A>) -> R
     let access_token = auth_provider.get_access_token().await?;
     
     // Connect to server
-    let mut grpc_client = GrpcClient::connect(&config.server_address, access_token).await?;
+    let mut grpc_client =
+        GrpcClient::connect(&config.server_address, access_token, config.session_id).await?;
 
     // Get config (establishes session, returns endpoint)
     let client_config = grpc_client.get_config().await?;
@@ -60,8 +63,8 @@ pub async fn run_client<A: AuthProvider + 'static>(config: ClientConfig<A>) -> R
 
     tracing::info!(endpoint = %endpoint, "Client connected, starting webhook stream");
 
-    // Create proxy
-    let proxy = Proxy::new(config.local_endpoint);
+    // Create proxy with route prefix for fallback forwarding
+    let proxy = Proxy::new(config.local_endpoint).with_route_prefix(&endpoint);
 
     // Spawn the webhook stream handler
     let join_handle = tokio::spawn(async move {
