@@ -91,6 +91,7 @@ pub struct AuthManager {
     http_client: reqwest::Client,
     keyring_user: String,
     callback_port: u16,
+    scopes: Vec<String>,
 }
 
 impl AuthManager {
@@ -121,6 +122,7 @@ impl AuthManager {
             http_client,
             keyring_user,
             callback_port,
+            scopes: config.scopes.clone(),
         })
     }
     
@@ -221,11 +223,22 @@ impl AuthManager {
         // Generate PKCE challenge
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         
-        // Generate authorization URL with offline_access scope for refresh tokens
-        let (auth_url, csrf_token) = self.client
-            .authorize_url(CsrfToken::new_random)
-            .add_scope(Scope::new("openid".to_string()))
-            .add_scope(Scope::new("offline_access".to_string()))
+        // Generate authorization URL
+        // If scopes are configured, use only those (all-or-nothing override)
+        // Otherwise use defaults: openid + offline_access
+        let mut auth_request = self.client.authorize_url(CsrfToken::new_random);
+        
+        if self.scopes.is_empty() {
+            auth_request = auth_request
+                .add_scope(Scope::new("openid".to_string()))
+                .add_scope(Scope::new("offline_access".to_string()));
+        } else {
+            for scope in &self.scopes {
+                auth_request = auth_request.add_scope(Scope::new(scope.clone()));
+            }
+        }
+        
+        let (auth_url, csrf_token) = auth_request
             .set_pkce_challenge(pkce_challenge)
             .url();
         

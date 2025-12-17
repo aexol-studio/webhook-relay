@@ -10,14 +10,14 @@ use std::time::Duration;
 
 use chrono::Utc;
 use mcp_client::{
+    JsonRpcRequest, RequestLogEntry, SharedState,
     config::{Config, OAuthConfig},
-    handle_request, new_shared_state, JsonRpcRequest, RequestLogEntry,
-    SharedState,
+    handle_request, new_shared_state,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use server::config::Config as ServerConfig;
 
-use test_helpers::{get_test_token, MockLocalServer};
+use test_helpers::{MockLocalServer, get_test_token};
 
 // Test configuration
 const KEYCLOAK_ISSUER: &str = "http://localhost:8180/realms/relay";
@@ -27,9 +27,7 @@ const TEST_PASSWORD: &str = "testpass";
 const JWT_AUDIENCE: &str = "webhook-relay-cli";
 
 fn init_tracing() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 }
 
 fn create_server_config(http_port: u16, grpc_port: u16) -> ServerConfig {
@@ -56,6 +54,7 @@ fn create_mcp_config(grpc_addr: &str, local_endpoint: &str) -> Config {
             auth_url: None,
             token_url: None,
             callback_port: None,
+            scopes: vec![],
         },
     }
 }
@@ -162,12 +161,12 @@ async fn test_mcp_list_tools() {
     let tools = result["tools"].as_array().expect("No tools array");
 
     // Verify expected tools exist
-    let tool_names: Vec<&str> = tools
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
 
-    assert!(tool_names.contains(&"get_config"), "Missing get_config tool");
+    assert!(
+        tool_names.contains(&"get_config"),
+        "Missing get_config tool"
+    );
     assert!(
         tool_names.contains(&"get_request_log"),
         "Missing get_request_log tool"
@@ -256,7 +255,10 @@ async fn test_mcp_get_config_connected_status() {
         .expect("Should have text content");
 
     // Verify connected status is displayed
-    assert!(content.contains("Connected"), "Should show connected status");
+    assert!(
+        content.contains("Connected"),
+        "Should show connected status"
+    );
     assert!(
         content.contains("http://relay.example.com/webhook/abc123"),
         "Should show webhook endpoint"
@@ -349,8 +351,14 @@ async fn test_mcp_get_request_log_with_entries() {
         .expect("Should have text content");
 
     // Verify entries are displayed (newest first)
-    assert!(content.contains("req-002"), "Should contain second request ID");
-    assert!(content.contains("req-001"), "Should contain first request ID");
+    assert!(
+        content.contains("req-002"),
+        "Should contain second request ID"
+    );
+    assert!(
+        content.contains("req-001"),
+        "Should contain first request ID"
+    );
     assert!(content.contains("POST"), "Should show method");
     assert!(
         content.contains("/webhook/test"),
@@ -360,7 +368,10 @@ async fn test_mcp_get_request_log_with_entries() {
         content.contains("/webhook/another"),
         "Should show second request path"
     );
-    assert!(content.contains("2 total entries"), "Should show total count");
+    assert!(
+        content.contains("2 total entries"),
+        "Should show total count"
+    );
 
     // Verify newest first ordering (req-002 should appear before req-001)
     let pos_002 = content.find("req-002").expect("req-002 not found");
@@ -419,8 +430,14 @@ async fn test_mcp_get_request_log_pagination() {
     // Page 0 should have newest 2 entries (req-005, req-004)
     assert!(content.contains("req-005"), "Page 0 should have req-005");
     assert!(content.contains("req-004"), "Page 0 should have req-004");
-    assert!(!content.contains("req-003"), "Page 0 should not have req-003");
-    assert!(content.contains("Page 1 of 3"), "Should show correct page info");
+    assert!(
+        !content.contains("req-003"),
+        "Page 0 should not have req-003"
+    );
+    assert!(
+        content.contains("Page 1 of 3"),
+        "Should show correct page info"
+    );
 
     // Get page 1 with page_size 2
     let request = make_request(
@@ -446,8 +463,14 @@ async fn test_mcp_get_request_log_pagination() {
     // Page 1 should have req-003, req-002
     assert!(content.contains("req-003"), "Page 1 should have req-003");
     assert!(content.contains("req-002"), "Page 1 should have req-002");
-    assert!(!content.contains("req-005"), "Page 1 should not have req-005");
-    assert!(content.contains("Page 2 of 3"), "Should show correct page info");
+    assert!(
+        !content.contains("req-005"),
+        "Page 1 should not have req-005"
+    );
+    assert!(
+        content.contains("Page 2 of 3"),
+        "Should show correct page info"
+    );
 
     // Get page 2 with page_size 2
     let request = make_request(
@@ -472,7 +495,10 @@ async fn test_mcp_get_request_log_pagination() {
 
     // Page 2 should have only req-001
     assert!(content.contains("req-001"), "Page 2 should have req-001");
-    assert!(!content.contains("req-002"), "Page 2 should not have req-002");
+    assert!(
+        !content.contains("req-002"),
+        "Page 2 should not have req-002"
+    );
 
     tracing::info!("Pagination test passed!");
 }
@@ -589,9 +615,14 @@ async fn test_mcp_full_webhook_flow() {
     tracing::info!("Relay server HTTP: {}, gRPC: {}", http_addr, grpc_addr);
 
     // 3. Get OAuth token
-    let token = get_test_token(KEYCLOAK_ISSUER, KEYCLOAK_CLIENT_ID, TEST_USERNAME, TEST_PASSWORD)
-        .await
-        .expect("Failed to get test token");
+    let token = get_test_token(
+        KEYCLOAK_ISSUER,
+        KEYCLOAK_CLIENT_ID,
+        TEST_USERNAME,
+        TEST_PASSWORD,
+    )
+    .await
+    .expect("Failed to get test token");
 
     // 4. Create MCP state with config
     let mcp_config = create_mcp_config(&grpc_addr, &local_endpoint);
@@ -635,8 +666,7 @@ async fn test_mcp_full_webhook_flow() {
                     let path = http_request.path.clone();
                     let query = http_request.query.clone();
                     let request_headers = http_request.headers.clone();
-                    let request_body =
-                        String::from_utf8_lossy(&http_request.body).to_string();
+                    let request_body = String::from_utf8_lossy(&http_request.body).to_string();
 
                     // Forward request to local endpoint
                     let url = format!("{}{}", local_endpoint.trim_end_matches('/'), path);
@@ -711,13 +741,13 @@ async fn test_mcp_full_webhook_flow() {
         content.contains("Connected"),
         "Should show connected status"
     );
-    assert!(
-        content.contains(&endpoint),
-        "Should show webhook endpoint"
-    );
+    assert!(content.contains(&endpoint), "Should show webhook endpoint");
 
     // 8. Send a webhook to the relay server
-    let route = endpoint.rsplit('/').next().expect("Invalid endpoint format");
+    let route = endpoint
+        .rsplit('/')
+        .next()
+        .expect("Invalid endpoint format");
     let webhook_url = format!("{}/{}/test-path", http_addr, route);
     let webhook_body = r#"{"event": "mcp_test", "data": "hello"}"#;
 

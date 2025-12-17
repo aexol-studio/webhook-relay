@@ -85,6 +85,7 @@ pub mod config {
                     auth_url: None,
                     token_url: None,
                     callback_port: None,
+                    scopes: vec![],
                 },
             };
 

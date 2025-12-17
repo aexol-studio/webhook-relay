@@ -24,7 +24,14 @@ pub struct RelayClient {
 impl RelayClient {
     /// Connect to the relay server
     pub async fn connect(server_address: &str, access_token: String) -> Result<Self> {
-        let channel = Channel::from_shared(server_address.to_string())?
+        let mut endpoint = Channel::from_shared(server_address.to_string())?;
+        
+        // Enable TLS for HTTPS endpoints
+        if server_address.starts_with("https://") {
+            endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_native_roots())?;
+        }
+        
+        let channel = endpoint
             .connect()
             .await
             .context("Failed to connect to server")?;

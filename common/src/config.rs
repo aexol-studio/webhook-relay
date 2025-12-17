@@ -17,6 +17,12 @@ pub struct OAuthConfig {
     /// Port for OAuth callback server. Defaults to 19284.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callback_port: Option<u16>,
+    /// OAuth scopes to request. If empty, defaults to `openid` and `offline_access`.
+    /// If provided, these scopes are used instead (all-or-nothing override).
+    /// For Azure AD, typically include `openid`, `offline_access`, and
+    /// `{client_id}/.default` to get an access token for your API.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
