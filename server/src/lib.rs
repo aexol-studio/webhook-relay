@@ -64,7 +64,7 @@ pub async fn run_server(config: Config) -> Result<(ServerHandle, ServerAddresses
         webhook_timeout: Duration::from_secs(config.webhook_timeout_secs),
     };
 
-    let http_addr = format!("0.0.0.0:{}", config.http_port);
+    let http_addr = format!("[::]:{}", config.http_port);
     let http_listener = tokio::net::TcpListener::bind(&http_addr).await?;
     let http_bound_addr = http_listener.local_addr()?;
 
@@ -83,7 +83,7 @@ pub async fn run_server(config: Config) -> Result<(ServerHandle, ServerAddresses
     });
 
     // Start gRPC server
-    let grpc_addr: SocketAddr = format!("0.0.0.0:{}", config.grpc_port).parse()?;
+    let grpc_addr: SocketAddr = format!("[::]:{}", config.grpc_port).parse()?;
     let relay_service = RelayServiceImpl::new(connections.clone(), jwks_cache.clone(), &config);
 
     // Bind to get the actual port
