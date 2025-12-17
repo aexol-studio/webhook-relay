@@ -9,7 +9,7 @@ use axum::{
     extract::{ConnectInfo, Path, State},
     http::{HeaderMap, Method, StatusCode, header::HeaderName},
     response::IntoResponse,
-    routing::any,
+    routing::{any, get},
 };
 
 use crate::grpc::{ClientConnections, send_request_to_client};
@@ -31,9 +31,14 @@ pub struct HttpState {
 
 pub fn create_router(state: HttpState) -> Router {
     Router::new()
+        .route("/health", get(health_check))
         .route("/{route}", any(handle_webhook))
         .route("/{route}/{*path}", any(handle_webhook))
         .with_state(state)
+}
+
+async fn health_check() -> StatusCode {
+    StatusCode::OK
 }
 
 async fn handle_webhook(

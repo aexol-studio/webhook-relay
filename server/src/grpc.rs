@@ -19,14 +19,13 @@ pub struct PendingRequest {
     pub response_tx: oneshot::Sender<HttpResponse>,
 }
 
-/// Connected client with its request channel and pending requests
-pub struct ConnectedClient {
-    pub request_tx: mpsc::Sender<HttpRequest>,
-    pub pending_requests: Arc<RwLock<HashMap<String, PendingRequest>>>,
+pub struct Envelope {
+    pub request: HttpRequest,
+    pub response_tx: oneshot::Sender<HttpResponse>,
 }
 
 /// Active client connections indexed by route
-pub type ClientConnections = Arc<RwLock<HashMap<String, Arc<ConnectedClient>>>>;
+pub type ClientConnections = Arc<RwLock<HashMap<String, mpsc::Sender<Envelope>>>>;
 
 pub struct RelayServiceImpl {
     connections: ClientConnections,
@@ -35,18 +34,26 @@ pub struct RelayServiceImpl {
 }
 
 impl RelayServiceImpl {
-    pub fn new(connections: ClientConnections, jwks_cache: Arc<JwksCache>, config: &Config) -> Self {
+    pub fn new(
+        connections: ClientConnections,
+        jwks_cache: Arc<JwksCache>,
+        config: &Config,
+    ) -> Self {
         Self {
             connections,
             jwks_cache,
-            external_url: config.external_url.clone().trim_end_matches('/').to_string(),
+            external_url: config
+                .external_url
+                .clone()
+                .trim_end_matches('/')
+                .to_string(),
         }
     }
 }
 
 /// Generate a route from user_id and session_id using a hash
 fn session_to_route(user_id: &str, session_id: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(user_id.as_bytes());
     hasher.update(session_id.as_bytes());
@@ -111,7 +118,9 @@ impl RelayService for RelayServiceImpl {
         // Always return session_id in response metadata
         response.metadata_mut().insert(
             SESSION_ID_HEADER,
-            session_id.parse().map_err(|_| Status::internal("Failed to set session header"))?,
+            session_id
+                .parse()
+                .map_err(|_| Status::internal("Failed to set session header"))?,
         );
 
         Ok(response)
@@ -128,18 +137,15 @@ impl RelayService for RelayServiceImpl {
         let session_id = get_session_id(&request)?;
         let route = session_to_route(&user_id, &session_id);
 
-        let (request_tx, request_rx) = mpsc::channel::<HttpRequest>(32);
-        let pending_requests = Arc::new(RwLock::new(HashMap::new()));
-
-        let client = Arc::new(ConnectedClient {
-            request_tx,
-            pending_requests: pending_requests.clone(),
-        });
+        let (request_tx, request_rx) = mpsc::channel::<Envelope>(32);
+        let pending_requests: Arc<RwLock<HashMap<String, oneshot::Sender<HttpResponse>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let pending_requests_ref = pending_requests.clone();
 
         // Register client connection
         {
             let mut connections = self.connections.write().await;
-            connections.insert(route.clone(), client);
+            connections.insert(route.clone(), request_tx);
         }
 
         tracing::info!(
@@ -161,7 +167,7 @@ impl RelayService for RelayServiceImpl {
                         let request_id = response.request_id.clone();
                         let mut pending = pending_requests.write().await;
                         if let Some(pending_req) = pending.remove(&request_id) {
-                            let _ = pending_req.response_tx.send(response);
+                            let _ = pending_req.send(response);
                         } else {
                             tracing::warn!(
                                 request_id = %request_id,
@@ -182,14 +188,23 @@ impl RelayService for RelayServiceImpl {
             tracing::info!(route = %route_clone, "Client stream ended, unregistered");
         });
 
-        let output_stream = ReceiverStream::new(request_rx).map(Ok);
+        let output_stream = ReceiverStream::new(request_rx).then(move |ev| {
+            let pending_requests_ref = pending_requests_ref.clone();
+            async move {
+                let mut pending = pending_requests_ref.write().await;
+                pending.insert(ev.request.request_id.clone(), ev.response_tx);
+                Ok(ev.request)
+            }
+        });
 
         let mut response = Response::new(Box::pin(output_stream) as Self::DoWebhookStream);
-        
+
         // Return session_id in response metadata
         response.metadata_mut().insert(
             SESSION_ID_HEADER,
-            session_id.parse().map_err(|_| Status::internal("Failed to set session header"))?,
+            session_id
+                .parse()
+                .map_err(|_| Status::internal("Failed to set session header"))?,
         );
 
         Ok(response)
@@ -197,44 +212,28 @@ impl RelayService for RelayServiceImpl {
 }
 
 pub async fn send_request_to_client(
-    client: &Arc<ConnectedClient>,
+    request_tx: &mpsc::Sender<Envelope>,
     request: HttpRequest,
     timeout: std::time::Duration,
 ) -> Result<HttpResponse, Status> {
-    let request_id = request.request_id.clone();
-
     // Create oneshot channel for response
     let (response_tx, response_rx) = oneshot::channel();
 
-    // Register pending request
-    {
-        let mut pending = client.pending_requests.write().await;
-        pending.insert(request_id.clone(), PendingRequest { response_tx });
-    }
-
     // Send request to client
-    client
-        .request_tx
-        .send(request)
+    request_tx
+        .send(Envelope {
+            request,
+            response_tx,
+        })
         .await
         .map_err(|_| Status::unavailable("Client disconnected"))?;
 
     // Wait for response with timeout
     match tokio::time::timeout(timeout, response_rx).await {
         Ok(Ok(response)) => Ok(response),
-        Ok(Err(_)) => {
-            // Channel closed, remove pending request
-            let mut pending = client.pending_requests.write().await;
-            pending.remove(&request_id);
-            Err(Status::unavailable(
-                "Client disconnected while waiting for response",
-            ))
-        }
-        Err(_) => {
-            // Timeout, remove pending request
-            let mut pending = client.pending_requests.write().await;
-            pending.remove(&request_id);
-            Err(Status::deadline_exceeded("Request timed out"))
-        }
+        Ok(Err(_)) => Err(Status::unavailable(
+            "Client disconnected while waiting for response",
+        )),
+        Err(_) => Err(Status::deadline_exceeded("Request timed out")),
     }
 }
