@@ -6,8 +6,8 @@ use anyhow::Result;
 use api::HttpResponse;
 use chrono::Utc;
 use mcp_client::{
-    auth::AuthManager, config::Config, new_shared_state, run_mcp_server, RequestLogEntry,
-    SharedState,
+    RequestLogEntry, SharedState, auth::AuthManager, config::Config, new_shared_state,
+    run_mcp_server,
 };
 
 fn print_usage() {
@@ -15,7 +15,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --init                 Create default config file");
-    eprintln!("  --config <PATH>        Path to config file (default: ~/.config/webhook-relay/config.toml)");
+    eprintln!(
+        "  --config <PATH>        Path to config file (default: ~/.config/webhook-relay/config.toml)"
+    );
     eprintln!("  --session-id <ID>      Override session_id (also supports config)");
     eprintln!("  --help                 Show this help message");
 }
@@ -74,8 +76,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -232,7 +233,7 @@ async fn forward_request(
                 status_code: 400,
                 headers: Default::default(),
                 body: format!("Invalid HTTP method: {}", e).into_bytes(),
-            }
+            };
         }
     };
 

@@ -131,10 +131,9 @@ async fn handle_webhook(
 
             let mut response_headers = HeaderMap::new();
             for (name, value) in response.headers {
-                if let (Ok(header_name), Ok(header_value)) = (
-                    name.parse::<HeaderName>(),
-                    value.parse(),
-                ) {
+                if let (Ok(header_name), Ok(header_value)) =
+                    (name.parse::<HeaderName>(), value.parse())
+                {
                     response_headers.insert(header_name, header_value);
                 }
             }

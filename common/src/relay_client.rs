@@ -2,17 +2,17 @@
 
 use anyhow::{Context, Result};
 use api::{
-    relay_service_client::RelayServiceClient, ClientConfig, GetConfigRequest, HttpRequest,
-    HttpResponse,
+    ClientConfig, GetConfigRequest, HttpRequest, HttpResponse,
+    relay_service_client::RelayServiceClient,
 };
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
-use tonic::{metadata::MetadataValue, transport::Channel, Request, Streaming};
+use tonic::{Request, Streaming, metadata::MetadataValue, transport::Channel};
 
 const SESSION_ID_HEADER: &str = "x-session-id";
 
 /// A client for the webhook relay service.
-/// 
+///
 /// Handles session management transparently - the session ID is automatically
 /// extracted from GetConfig response and included in subsequent DoWebhook calls.
 pub struct RelayClient {
@@ -101,10 +101,11 @@ impl RelayClient {
 
         // Add session_id if we have one
         if let Some(session_id) = &self.session_id {
-            let session_value: MetadataValue<_> = session_id
-                .parse()
-                .context("Invalid session_id format")?;
-            request.metadata_mut().insert(SESSION_ID_HEADER, session_value);
+            let session_value: MetadataValue<_> =
+                session_id.parse().context("Invalid session_id format")?;
+            request
+                .metadata_mut()
+                .insert(SESSION_ID_HEADER, session_value);
         }
 
         Ok(())
@@ -149,11 +150,9 @@ impl RelayClient {
     }
 
     /// Start the webhook stream. Returns a handle to send responses and a stream of requests.
-    /// 
+    ///
     /// `get_config` must be called first to establish the session.
-    pub async fn do_webhook(
-        &self,
-    ) -> Result<(mpsc::Sender<HttpResponse>, Streaming<HttpRequest>)> {
+    pub async fn do_webhook(&self) -> Result<(mpsc::Sender<HttpResponse>, Streaming<HttpRequest>)> {
         if self.session_id.is_none() {
             anyhow::bail!("Session not established. Call get_config first.");
         }
@@ -179,7 +178,7 @@ impl RelayClient {
     }
 
     /// Convenience method to run the webhook stream with a handler function.
-    /// 
+    ///
     /// The handler receives each incoming request and should return a response.
     pub async fn run_webhook_loop<F, Fut>(&self, handler: F) -> Result<()>
     where

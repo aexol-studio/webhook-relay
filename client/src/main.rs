@@ -14,7 +14,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --init                 Create default config file");
-    eprintln!("  --config <PATH>        Path to config file (default: ~/.config/webhook-relay/config.toml)");
+    eprintln!(
+        "  --config <PATH>        Path to config file (default: ~/.config/webhook-relay/config.toml)"
+    );
     eprintln!("  --session-id <ID>      Override session_id (also supports config)");
     eprintln!("  --help                 Show this help message");
 }
@@ -33,7 +35,10 @@ fn parse_args() -> Result<(Option<PathBuf>, Option<String>)> {
             }
             "--init" => {
                 Config::create_default()?;
-                println!("Created default config at {}", Config::config_path()?.display());
+                println!(
+                    "Created default config at {}",
+                    Config::config_path()?.display()
+                );
                 println!("Please edit the config file and run again.");
                 std::process::exit(0);
             }
@@ -69,12 +74,11 @@ async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-    
+
     // Parse arguments
     let (config_path, session_id_override) = parse_args()?;
 
@@ -86,23 +90,23 @@ async fn main() -> Result<()> {
         }
         None => Config::load()?,
     };
-
-    if session_id_override.is_some() {
-        config.session_id = session_id_override;
+    if let Some(session_id) = session_id_override {
+        config.load_session_overrides(session_id.as_str())?;
+        config.session_id = Some(session_id);
     }
-    
+
     tracing::info!(
         server_address = %config.server_address,
         local_endpoint = %config.local_endpoint,
         "Configuration loaded"
     );
-    
+
     // Discover OAuth endpoints
     config.discover_oauth_endpoints().await?;
-    
+
     // Create auth manager
     let auth_manager = AuthManager::new(&config.oauth)?;
-    
+
     // Run client with auth provider
     let client_handle = client::run_client(client::ClientConfig {
         server_address: config.server_address,
@@ -111,16 +115,16 @@ async fn main() -> Result<()> {
         session_id: config.session_id,
     })
     .await?;
-    
+
     println!("Connected to server.");
     println!("Your webhook endpoint: {}", client_handle.endpoint);
     println!();
     println!("Listening for webhooks... (Ctrl+C to exit)");
-    
+
     // Wait for Ctrl+C
     tokio::signal::ctrl_c().await?;
-    
+
     client_handle.stop();
-    
+
     Ok(())
 }

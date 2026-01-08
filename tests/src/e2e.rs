@@ -18,9 +18,7 @@ const TEST_PASSWORD: &str = "testpass";
 const JWT_AUDIENCE: &str = "webhook-relay-cli";
 
 fn init_tracing() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 }
 
 fn create_test_config(http_port: u16, grpc_port: u16) -> Config {
@@ -38,20 +36,25 @@ fn create_test_config(http_port: u16, grpc_port: u16) -> Config {
 
 /// Create a test auth provider for the standard test credentials
 fn test_auth_provider() -> TestAuthProvider {
-    TestAuthProvider::new(KEYCLOAK_ISSUER, KEYCLOAK_CLIENT_ID, TEST_USERNAME, TEST_PASSWORD)
+    TestAuthProvider::new(
+        KEYCLOAK_ISSUER,
+        KEYCLOAK_CLIENT_ID,
+        TEST_USERNAME,
+        TEST_PASSWORD,
+    )
 }
 
 /// Test that a client can authenticate and get config
 #[tokio::test]
 async fn test_client_registration() {
     init_tracing();
-    
+
     // Start the server with random ports
     let config = create_test_config(0, 0);
     let (handle, addresses) = server::run_server(config)
         .await
         .expect("Failed to start server");
-    
+
     // Start client (black-box: just give it server address, auth provider, and local endpoint)
     let grpc_addr = format!("http://{}", addresses.grpc_addr);
     let client_handle = client::run_client(client::ClientConfig {
@@ -62,17 +65,17 @@ async fn test_client_registration() {
     })
     .await
     .expect("Failed to start client");
-    
+
     // Verify we got an endpoint
     assert!(!client_handle.endpoint.is_empty());
     tracing::info!("Got endpoint: {}", client_handle.endpoint);
-    
+
     client_handle.stop();
     handle.stop();
 }
 
 /// Test full webhook relay flow: server -> client -> local endpoint
-/// 
+///
 /// This is a true black-box test:
 /// 1. Start relay server
 /// 2. Start mock local server (simulates user's local service)
@@ -83,24 +86,24 @@ async fn test_client_registration() {
 #[tokio::test]
 async fn test_webhook_relay_flow() {
     init_tracing();
-    
+
     // 1. Start mock local server (this simulates the user's local application)
     let mock_server = MockLocalServer::start()
         .await
         .expect("Failed to start mock server");
     let local_endpoint = format!("http://{}", mock_server.addr);
     tracing::info!("Mock local server listening on {}", local_endpoint);
-    
+
     // 2. Start the relay server
     let config = create_test_config(0, 0);
     let (server_handle, addresses) = server::run_server(config)
         .await
         .expect("Failed to start server");
-    
+
     let http_addr = format!("http://{}", addresses.http_addr);
     let grpc_addr = format!("http://{}", addresses.grpc_addr);
     tracing::info!("Relay server HTTP: {}, gRPC: {}", http_addr, grpc_addr);
-    
+
     // 3. Start the client with auth provider
     let client_handle = client::run_client(client::ClientConfig {
         server_address: grpc_addr,
@@ -110,23 +113,24 @@ async fn test_webhook_relay_flow() {
     })
     .await
     .expect("Failed to start client");
-    
+
     // Extract route from endpoint
-    let route = client_handle.endpoint
+    let route = client_handle
+        .endpoint
         .rsplit('/')
         .next()
         .expect("Invalid endpoint format");
     tracing::info!("Client connected with route: {}", route);
-    
+
     // Give the client stream time to establish
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
+
     // 4. Send a webhook to the relay server's HTTP endpoint
     let webhook_url = format!("{}/{}/test-path", http_addr, route);
     let webhook_body = r#"{"event": "test", "data": "hello"}"#;
-    
+
     tracing::info!("Sending webhook to: {}", webhook_url);
-    
+
     let http_client = reqwest::Client::new();
     let webhook_response = http_client
         .post(&webhook_url)
@@ -136,7 +140,7 @@ async fn test_webhook_relay_flow() {
         .send()
         .await
         .expect("Failed to send webhook");
-    
+
     // 5. Verify the response from relay (which came from mock server -> client -> relay)
     assert!(
         webhook_response.status().is_success(),
@@ -191,15 +195,15 @@ async fn test_webhook_relay_flow() {
 #[tokio::test]
 async fn test_unauthenticated_rejected() {
     init_tracing();
-    
+
     // Start the server
     let config = create_test_config(0, 0);
     let (handle, addresses) = server::run_server(config)
         .await
         .expect("Failed to start server");
-    
+
     let grpc_addr = format!("http://{}", addresses.grpc_addr);
-    
+
     // Try to connect without auth token (empty string)
     let result = client::run_client(client::ClientConfig {
         server_address: grpc_addr,
@@ -208,9 +212,9 @@ async fn test_unauthenticated_rejected() {
         session_id: None,
     })
     .await;
-    
+
     assert!(result.is_err(), "Connection should have been rejected");
-    
+
     handle.stop();
 }
 
@@ -218,15 +222,15 @@ async fn test_unauthenticated_rejected() {
 #[tokio::test]
 async fn test_invalid_token_rejected() {
     init_tracing();
-    
+
     // Start the server
     let config = create_test_config(0, 0);
     let (handle, addresses) = server::run_server(config)
         .await
         .expect("Failed to start server");
-    
+
     let grpc_addr = format!("http://{}", addresses.grpc_addr);
-    
+
     // Try with invalid token
     let result = client::run_client(client::ClientConfig {
         server_address: grpc_addr,
@@ -235,9 +239,9 @@ async fn test_invalid_token_rejected() {
         session_id: None,
     })
     .await;
-    
+
     assert!(result.is_err(), "Connection should have been rejected");
-    
+
     handle.stop();
 }
 
@@ -245,17 +249,17 @@ async fn test_invalid_token_rejected() {
 #[tokio::test]
 async fn test_wrong_audience_rejected() {
     init_tracing();
-    
+
     // Start the server with a different expected audience
     let mut config = create_test_config(0, 0);
     config.jwt_audience = "wrong-audience".to_string();
-    
+
     let (handle, addresses) = server::run_server(config)
         .await
         .expect("Failed to start server");
-    
+
     let grpc_addr = format!("http://{}", addresses.grpc_addr);
-    
+
     // Try to use the token - should be rejected due to audience mismatch
     // The test auth provider will get a valid token with audience = webhook-relay-cli
     let result = client::run_client(client::ClientConfig {
@@ -265,8 +269,11 @@ async fn test_wrong_audience_rejected() {
         session_id: None,
     })
     .await;
-    
-    assert!(result.is_err(), "Connection should have been rejected due to audience mismatch");
+
+    assert!(
+        result.is_err(),
+        "Connection should have been rejected due to audience mismatch"
+    );
 
     handle.stop();
 }
@@ -301,7 +308,8 @@ async fn test_x_forwarded_headers() {
     .await
     .expect("Failed to start client");
 
-    let route = client_handle.endpoint
+    let route = client_handle
+        .endpoint
         .rsplit('/')
         .next()
         .expect("Invalid endpoint format");

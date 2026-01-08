@@ -47,12 +47,14 @@ impl ClientHandle {
 /// forwarding webhooks to the local endpoint in the background.
 ///
 /// Returns a handle containing the endpoint URL and a way to stop the client.
-pub async fn run_client<A: AuthProvider + 'static>(config: ClientConfig<A>) -> Result<ClientHandle> {
+pub async fn run_client<A: AuthProvider + 'static>(
+    config: ClientConfig<A>,
+) -> Result<ClientHandle> {
     let auth_provider = Arc::new(config.auth_provider);
-    
+
     // Get initial access token
     let access_token = auth_provider.get_access_token().await?;
-    
+
     // Connect to server
     let mut grpc_client =
         GrpcClient::connect(&config.server_address, access_token, config.session_id).await?;

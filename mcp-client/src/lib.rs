@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock};
 
 pub use mcp::*;
@@ -23,10 +23,10 @@ pub mod auth {
 pub mod config {
     use std::path::{Path, PathBuf};
 
-    use anyhow::{bail, Context, Result};
+    use anyhow::{Context, Result, bail};
     use serde::{Deserialize, Serialize};
 
-    pub use common::config::{config_dir, config_path, discover_oauth_endpoints, OAuthConfig};
+    pub use common::config::{OAuthConfig, config_dir, config_path, discover_oauth_endpoints};
 
     /// Full client configuration
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,8 +69,7 @@ pub mod config {
                 );
             }
 
-            let contents =
-                std::fs::read_to_string(path).context("Failed to read config file")?;
+            let contents = std::fs::read_to_string(path).context("Failed to read config file")?;
 
             toml::from_str(&contents).context("Failed to parse config file")
         }
@@ -95,8 +94,7 @@ pub mod config {
             };
 
             let path = Self::config_path()?;
-            let contents =
-                toml::to_string_pretty(&config).context("Failed to serialize config")?;
+            let contents = toml::to_string_pretty(&config).context("Failed to serialize config")?;
 
             std::fs::write(&path, contents).context("Failed to write config file")?;
 
@@ -181,24 +179,25 @@ impl McpState {
     }
 
     /// Get request log entries, paginated, sorted from newest to oldest
-    /// 
+    ///
     /// Returns (entries, total_count)
     pub fn get_request_log(&self, page: usize, page_size: usize) -> (Vec<&RequestLogEntry>, usize) {
         let total = self.request_log.len();
         let start = page * page_size;
-        
+
         if start >= total {
             return (Vec::new(), total);
         }
-        
+
         // Reverse iteration for newest first
-        let entries: Vec<_> = self.request_log
+        let entries: Vec<_> = self
+            .request_log
             .iter()
             .rev()
             .skip(start)
             .take(page_size)
             .collect();
-        
+
         (entries, total)
     }
 
@@ -319,7 +318,9 @@ fn handle_list_tools(id: Option<Value>) -> JsonRpcResponse {
         },
         Tool {
             name: "get_request_log".to_string(),
-            description: "Get the log of webhook requests and responses, sorted from newest to oldest".to_string(),
+            description:
+                "Get the log of webhook requests and responses, sorted from newest to oldest"
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -353,12 +354,10 @@ async fn handle_call_tool(
                     id,
                     error_codes::INVALID_PARAMS,
                     &format!("Invalid params: {}", e),
-                )
+                );
             }
         },
-        None => {
-            return JsonRpcResponse::error(id, error_codes::INVALID_PARAMS, "Missing params")
-        }
+        None => return JsonRpcResponse::error(id, error_codes::INVALID_PARAMS, "Missing params"),
     };
 
     let result = match params.name.as_str() {
@@ -412,7 +411,7 @@ async fn tool_get_request_log(args: Option<Value>, state: SharedState) -> CallTo
         .and_then(|a| a.get("page"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
-    
+
     let page_size = args
         .as_ref()
         .and_then(|a| a.get("page_size"))
@@ -444,7 +443,10 @@ async fn tool_get_request_log(args: Option<Value>, state: SharedState) -> CallTo
 
     for entry in entries {
         output.push_str(&format!("--- Request {} ---\n", entry.request_id));
-        output.push_str(&format!("Timestamp: {}\n", entry.timestamp.format("%Y-%m-%d %H:%M:%S UTC")));
+        output.push_str(&format!(
+            "Timestamp: {}\n",
+            entry.timestamp.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
         output.push_str(&format!("Method: {}\n", entry.method));
         output.push_str(&format!("Path: {}\n", entry.path));
         if !entry.query.is_empty() {

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 
 /// Authentication provider for tests using OAuth password grant.
-/// 
+///
 /// This allows tests to authenticate without browser interaction.
 pub struct TestAuthProvider {
     issuer: String,
@@ -35,12 +35,18 @@ impl TestAuthProvider {
 #[async_trait]
 impl AuthProvider for TestAuthProvider {
     async fn get_access_token(&self) -> Result<String> {
-        get_test_token(&self.issuer, &self.client_id, &self.username, &self.password).await
+        get_test_token(
+            &self.issuer,
+            &self.client_id,
+            &self.username,
+            &self.password,
+        )
+        .await
     }
 }
 
 /// Authentication provider that returns a static/fixed token.
-/// 
+///
 /// Useful for testing invalid token scenarios.
 pub struct StaticTokenAuthProvider {
     token: String,
@@ -53,12 +59,12 @@ impl StaticTokenAuthProvider {
             token: token.into(),
         }
     }
-    
+
     /// Create an auth provider that returns an empty token
     pub fn empty() -> Self {
         Self::new("")
     }
-    
+
     /// Create an auth provider that returns an invalid token
     pub fn invalid() -> Self {
         Self::new("invalid.token.here")
@@ -80,7 +86,7 @@ pub async fn get_test_token(
     password: &str,
 ) -> Result<String> {
     let token_url = format!("{}/protocol/openid-connect/token", issuer);
-    
+
     let client = reqwest::Client::new();
     let response = client
         .post(&token_url)
@@ -93,20 +99,22 @@ pub async fn get_test_token(
         .send()
         .await
         .context("Failed to request token")?;
-    
+
     if !response.status().is_success() {
         let error_text = response.text().await.unwrap_or_default();
         anyhow::bail!("Token request failed: {}", error_text);
     }
-    
+
     #[derive(Deserialize)]
     struct TokenResponse {
         access_token: String,
     }
-    
-    let token_response: TokenResponse = response.json().await
+
+    let token_response: TokenResponse = response
+        .json()
+        .await
         .context("Failed to parse token response")?;
-    
+
     Ok(token_response.access_token)
 }
 
@@ -129,31 +137,35 @@ impl MockLocalServer {
     /// Start a mock server that captures all POST requests
     pub async fn start() -> Result<Self> {
         let requests = Arc::new(Mutex::new(Vec::new()));
-        
+
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
-        
+
         let requests_clone = requests.clone();
-        
+
         let app = Router::new()
             .route("/{*path}", post(capture_handler))
             .route("/", post(capture_handler))
             .with_state(requests_clone);
-        
+
         tokio::spawn(async move {
             axum::serve(listener, app).await.ok();
         });
-        
+
         Ok(Self { addr, requests })
     }
-    
+
     /// Get all captured requests
     pub async fn get_requests(&self) -> Vec<CapturedRequest> {
         self.requests.lock().await.clone()
     }
-    
+
     /// Wait for at least `count` requests, with timeout
-    pub async fn wait_for_requests(&self, count: usize, timeout: std::time::Duration) -> Result<Vec<CapturedRequest>> {
+    pub async fn wait_for_requests(
+        &self,
+        count: usize,
+        timeout: std::time::Duration,
+    ) -> Result<Vec<CapturedRequest>> {
         let start = std::time::Instant::now();
         loop {
             let requests = self.requests.lock().await.clone();
@@ -161,7 +173,11 @@ impl MockLocalServer {
                 return Ok(requests);
             }
             if start.elapsed() > timeout {
-                anyhow::bail!("Timeout waiting for {} requests, got {}", count, requests.len());
+                anyhow::bail!(
+                    "Timeout waiting for {} requests, got {}",
+                    count,
+                    requests.len()
+                );
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -179,18 +195,18 @@ async fn capture_handler(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
-    
+
     let body = axum::body::to_bytes(req.into_body(), usize::MAX)
         .await
         .map(|b| b.to_vec())
         .unwrap_or_default();
-    
+
     requests.lock().await.push(CapturedRequest {
         method,
         path,
         headers,
         body,
     });
-    
+
     "OK"
 }

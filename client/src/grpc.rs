@@ -13,7 +13,8 @@ impl GrpcClient {
         access_token: String,
         session_id: Option<String>,
     ) -> anyhow::Result<Self> {
-        let relay_client = RelayClient::connect_with_session(server_address, access_token, session_id).await?;
+        let relay_client =
+            RelayClient::connect_with_session(server_address, access_token, session_id).await?;
         Ok(Self { relay_client })
     }
 

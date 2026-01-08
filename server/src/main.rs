@@ -1,8 +1,8 @@
 use anyhow::Result;
 #[cfg(target_env = "musl")]
 use mimalloc::MiMalloc;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use server::{config::Config, run_server};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg(target_env = "musl")]
 #[global_allocator]
@@ -18,16 +18,16 @@ async fn main() -> Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-    
+
     tracing::info!("Starting webhook-relay server");
-    
+
     // Load configuration
     let config = Config::from_env().await?;
-    
+
     let (_handle, _addresses) = run_server(config).await?;
-    
+
     // Keep running until interrupted
     tokio::signal::ctrl_c().await?;
-    
+
     Ok(())
 }

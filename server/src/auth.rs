@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use jsonwebtoken::{
     Algorithm, DecodingKey, Validation, decode, decode_header,
-    jwk::{JwkSet, AlgorithmParameters},
+    jwk::{AlgorithmParameters, JwkSet},
 };
 use serde::Deserialize;
 use tokio::sync::RwLock;
@@ -121,7 +121,7 @@ impl JwksCache {
             jwt_audience: config.jwt_audience.clone(),
         }
     }
-    
+
     async fn fetch_jwks(&self) -> Result<JwkSet> {
         let client = reqwest::Client::new();
         let response = client
@@ -129,17 +129,17 @@ impl JwksCache {
             .send()
             .await
             .context("Failed to fetch JWKS")?;
-        
+
         if !response.status().is_success() {
             bail!("JWKS fetch failed with status: {}", response.status());
         }
-        
+
         response
             .json::<JwkSet>()
             .await
             .context("Failed to parse JWKS")
     }
-    
+
     async fn get_jwks(&self) -> Result<JwkSet> {
         // Check if we have a valid cached JWKS
         {
@@ -150,56 +150,64 @@ impl JwksCache {
                 return Ok(cached.jwks.clone());
             }
         }
-        
+
         // Need to refresh
         let jwks = self.fetch_jwks().await?;
-        
+
         let mut cache = self.cache.write().await;
         *cache = Some(CachedJwks {
             jwks: jwks.clone(),
             fetched_at: Instant::now(),
         });
-        
+
         Ok(jwks)
     }
-    
+
     pub async fn validate_token(&self, token: &str) -> Result<Claims, Status> {
         let header = decode_header(token)
             .map_err(|e| Status::unauthenticated(format!("Invalid token header: {}", e)))?;
-        
-        let kid = header.kid
+
+        let kid = header
+            .kid
             .ok_or_else(|| Status::unauthenticated("Token missing kid header"))?;
-        
-        let jwks = self.get_jwks().await
+
+        let jwks = self
+            .get_jwks()
+            .await
             .map_err(|e| Status::internal(format!("Failed to get JWKS: {}", e)))?;
-        
-        let jwk = jwks.find(&kid)
+
+        let jwk = jwks
+            .find(&kid)
             .ok_or_else(|| Status::unauthenticated("Key not found in JWKS"))?;
-        
+
         let decoding_key = match &jwk.algorithm {
-            AlgorithmParameters::RSA(rsa) => {
-                DecodingKey::from_rsa_components(&rsa.n, &rsa.e)
-                    .map_err(|e| Status::internal(format!("Invalid RSA key: {}", e)))?
-            }
-            AlgorithmParameters::EllipticCurve(ec) => {
-                DecodingKey::from_ec_components(&ec.x, &ec.y)
-                    .map_err(|e| Status::internal(format!("Invalid EC key: {}", e)))?
-            }
+            AlgorithmParameters::RSA(rsa) => DecodingKey::from_rsa_components(&rsa.n, &rsa.e)
+                .map_err(|e| Status::internal(format!("Invalid RSA key: {}", e)))?,
+            AlgorithmParameters::EllipticCurve(ec) => DecodingKey::from_ec_components(&ec.x, &ec.y)
+                .map_err(|e| Status::internal(format!("Invalid EC key: {}", e)))?,
             _ => return Err(Status::internal("Unsupported key algorithm")),
         };
-        
+
         let algorithm = header.alg;
-        if !matches!(algorithm, Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 | Algorithm::ES256 | Algorithm::ES384) {
+        if !matches!(
+            algorithm,
+            Algorithm::RS256
+                | Algorithm::RS384
+                | Algorithm::RS512
+                | Algorithm::ES256
+                | Algorithm::ES384
+        ) {
             return Err(Status::unauthenticated("Unsupported token algorithm"));
         }
-        
+
         // Build validation - only validate issuer and expiry, we'll check audience manually
         let mut validation = Validation::new(algorithm);
         validation.set_issuer(&[&self.jwt_issuer]);
         validation.validate_aud = false;
-        
+
         // Try parsing as Keycloak claims first (more specific), then fall back to standard
-        let claims = self.try_parse_keycloak(token, &decoding_key, &validation)
+        let claims = self
+            .try_parse_keycloak(token, &decoding_key, &validation)
             .or_else(|_| self.try_parse_standard(token, &decoding_key, &validation))?;
 
         // Verify audience
@@ -209,7 +217,7 @@ impl JwksCache {
 
         Ok(claims)
     }
-    
+
     fn try_parse_keycloak(
         &self,
         token: &str,
@@ -218,10 +226,10 @@ impl JwksCache {
     ) -> Result<Claims, Status> {
         let token_data = decode::<KeycloakClaims>(token, decoding_key, validation)
             .map_err(|e| Status::unauthenticated(format!("Keycloak token parse failed: {}", e)))?;
-        
+
         Ok(Claims::Keycloak(token_data.claims))
     }
-    
+
     fn try_parse_standard(
         &self,
         token: &str,
@@ -230,7 +238,7 @@ impl JwksCache {
     ) -> Result<Claims, Status> {
         let token_data = decode::<StandardClaims>(token, decoding_key, validation)
             .map_err(|e| Status::unauthenticated(format!("Standard token parse failed: {}", e)))?;
-        
+
         Ok(Claims::Standard(token_data.claims))
     }
 }
@@ -239,7 +247,9 @@ impl JwksCache {
 // Auth Middleware Helpers
 // =============================================================================
 
-pub fn check_auth<T>(_jwks_cache: Arc<JwksCache>) -> impl Fn(Request<T>) -> Result<Request<T>, Status> + Clone {
+pub fn check_auth<T>(
+    _jwks_cache: Arc<JwksCache>,
+) -> impl Fn(Request<T>) -> Result<Request<T>, Status> + Clone {
     move |mut request: Request<T>| {
         let auth_header = request
             .metadata()
@@ -248,15 +258,17 @@ pub fn check_auth<T>(_jwks_cache: Arc<JwksCache>) -> impl Fn(Request<T>) -> Resu
             .to_str()
             .map_err(|_| Status::unauthenticated("Invalid authorization header"))?
             .to_string();
-        
+
         let token = auth_header
             .strip_prefix("Bearer ")
-            .ok_or_else(|| Status::unauthenticated("Invalid authorization format, expected Bearer token"))?
+            .ok_or_else(|| {
+                Status::unauthenticated("Invalid authorization format, expected Bearer token")
+            })?
             .to_string();
-        
+
         // Store token in extensions for async validation later
         request.extensions_mut().insert(AuthToken(token));
-        
+
         Ok(request)
     }
 }
@@ -264,11 +276,14 @@ pub fn check_auth<T>(_jwks_cache: Arc<JwksCache>) -> impl Fn(Request<T>) -> Resu
 #[derive(Clone)]
 pub struct AuthToken(pub String);
 
-pub async fn validate_auth<T>(request: &Request<T>, jwks_cache: &JwksCache) -> Result<Claims, Status> {
+pub async fn validate_auth<T>(
+    request: &Request<T>,
+    jwks_cache: &JwksCache,
+) -> Result<Claims, Status> {
     let token = request
         .extensions()
         .get::<AuthToken>()
         .ok_or_else(|| Status::unauthenticated("No auth token found"))?;
-    
+
     jwks_cache.validate_token(&token.0).await
 }
